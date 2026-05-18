@@ -80,6 +80,29 @@ def test_no_matches_returns_empty(vault: Path) -> None:
     assert hits == []
 
 
+def test_query_tokens_match_in_any_order(vault: Path) -> None:
+    """A multi-word query matches even when the words appear in different order.
+
+    Regression: previously the matcher required the exact phrase as substring,
+    so `metabolism curriculum` would miss a page about "curriculum on metabolism".
+    """
+    hits_a = find_module.find(vault, query="metabolism curriculum")
+    hits_b = find_module.find(vault, query="curriculum metabolism")
+    paths_a = {h.path for h in hits_a}
+    paths_b = {h.path for h in hits_b}
+    # Both queries should find the same set of pages.
+    assert paths_a == paths_b
+    # And both should include the curriculum research-note.
+    assert any("metabolic-literacy-curriculum" in p for p in paths_a)
+
+
+def test_query_all_tokens_required(vault: Path) -> None:
+    """Every token must appear; missing one token → no match."""
+    # `metabolism` appears in fixtures; the made-up token does not.
+    hits = find_module.find(vault, query="metabolism zzzzzzznotfoundzzzzz")
+    assert hits == []
+
+
 def test_excludes_schema_dir(vault: Path) -> None:
     hits = find_module.find(vault, query="SKILL")
     # _Schema/SKILL.md should not appear (excluded by walker)

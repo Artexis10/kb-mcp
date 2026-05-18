@@ -34,6 +34,11 @@ ALL_CATEGORIES: tuple[str, ...] = (
 # Matches [[Target]] or [[Target|Alias]]. Target may contain '/' for paths.
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]\|\n]+?)(?:\|[^\]\n]*)?\]\]")
 
+# When walking the full vault to build the wikilink-resolution set, skip these.
+VAULT_WALK_SKIP_DIRS = frozenset({
+    ".obsidian", ".git", ".trash", "_attachments", "_archive",
+})
+
 # Counts row in index.md. Captures (label, optional-subcategory, count).
 # Matches lines like:
 #   - Sources: 3 (articles: 1, ...)
@@ -91,7 +96,7 @@ def audit(
         )
 
     kb = kb_root(vault_root)
-    pages = _parse_all(kb)
+    pages = _parse_all(kb, vault_root)
 
     findings: list[AuditFinding] = []
     if "broken_wikilink" in selected:
@@ -119,7 +124,7 @@ def audit(
 # ---------------- vault walk ----------------
 
 
-def _parse_all(kb: Path) -> list[find_module.ParsedPage]:
+def _parse_all(kb: Path, vault_root: Path) -> list[find_module.ParsedPage]:
     """Walk the KB once, parse every .md, return ParsedPage objects."""
     pages: list[find_module.ParsedPage] = []
     for path in find_module._walk_md(kb):
@@ -127,7 +132,7 @@ def _parse_all(kb: Path) -> list[find_module.ParsedPage]:
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        page = find_module._parse_page(path, mtime)
+        page = find_module._parse_page(path, mtime, vault_root)
         if page is not None:
             pages.append(page)
     return pages
@@ -140,27 +145,39 @@ def _check_broken_wikilinks(
     vault_root: Path, pages: list[find_module.ParsedPage]
 ) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
-    kb = kb_root(vault_root)
-    # Pre-compute existing page paths (without .md suffix, KB-relative) for fast lookup.
-    existing: set[str] = set()
-    for page in pages:
-        existing.add(_rel_kb_path_no_ext(page.path, vault_root))
+
+    # Wikilinks in compiled KB notes may legitimately target the curated parent
+    # trees (`Cognitive Core/`, `Domains/`, `Products/`, etc., plus `_Schema/`).
+    # SKILL.md rule 1 explicitly calls these out as link targets. Build the
+    # existence set from the full vault so those don't false-positive.
+    full_paths: set[str] = set()          # vault-relative, no .md, e.g. "Products/Q/Strategy"
+    kb_stripped_paths: set[str] = set()   # KB-relative, no .md, e.g. "Notes/Insights/foo"
+    names_to_paths: dict[str, str] = {}   # bare filename (no ext) → first vault-rel path
+    for md_path in _walk_vault_md(vault_root):
+        try:
+            rel = md_path.resolve().relative_to(vault_root.resolve()).as_posix()
+        except ValueError:
+            continue
+        no_ext = rel.removesuffix(".md")
+        full_paths.add(no_ext)
+        kb_stripped_paths.add(no_ext.removeprefix("Knowledge Base/"))
+        names_to_paths.setdefault(md_path.stem, no_ext)
 
     for page in pages:
         for match in WIKILINK_PATTERN.finditer(page.body):
             target = match.group(1).strip()
-            # Strip leading "Knowledge Base/" if present; some wikilinks are KB-rooted.
+            if target.endswith("/"):
+                # Folder hub link, not a page link.
+                continue
             normalized = target.removeprefix("Knowledge Base/").lstrip("/")
-            # Some wikilinks point at folders via trailing /, e.g. [[Sources/Articles/]];
-            # skip those — they're folder hubs, not page links.
-            if normalized.endswith("/"):
+            if normalized in kb_stripped_paths:
                 continue
-            if normalized in existing:
+            if target.lstrip("/") in full_paths:
                 continue
-            # Also accept the absolute kb-rooted form on lookup, e.g. callers might
-            # write [[Sources/foo]] when target is filed as Sources/foo; our existing
-            # set stores the kb-rooted form, so a match would have already hit.
-            # If we get here, it's genuinely broken.
+            # Bare-name lookup: Obsidian resolves [[name]] by filename anywhere
+            # in the vault. Only attempt if no path separator.
+            if "/" not in target and target in names_to_paths:
+                continue
             findings.append(AuditFinding(
                 category="broken_wikilink",
                 severity="warn",
@@ -172,6 +189,28 @@ def _check_broken_wikilinks(
                 ),
             ))
     return findings
+
+
+def _walk_vault_md(vault_root: Path):
+    """Yield every .md path under the full vault, skipping config/cruft dirs.
+
+    Used for wikilink resolution — broader than find._walk_md which scopes to
+    Knowledge Base/ only. Compiled notes can link to curated parent trees
+    (per SKILL.md rule 1), so we need a full-vault existence set.
+    """
+    def walk(d: Path):
+        try:
+            children = list(d.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.is_dir():
+                if child.name in VAULT_WALK_SKIP_DIRS:
+                    continue
+                yield from walk(child)
+            elif child.is_file() and child.suffix.lower() == ".md":
+                yield child
+    yield from walk(vault_root)
 
 
 # ---------------- check: orphan_entity ----------------

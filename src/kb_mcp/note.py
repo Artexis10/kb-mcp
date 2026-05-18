@@ -35,7 +35,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import indexes
-from .vault import PlannedWrite, batch_atomic_write, kb_root, slugify_title, unique_path
+from .vault import (
+    PlannedWrite,
+    batch_atomic_write,
+    kb_root,
+    slugify_with_truncation_check,
+    unique_path,
+)
 
 
 log = logging.getLogger(__name__)
@@ -164,7 +170,7 @@ def note(
     tags_clean = _clean_tags(tags)
     sources_norm = _normalize_sources(sources)
 
-    note_path = _resolve_path(
+    note_path, slug_warning = _resolve_path(
         vault_root=vault_root,
         note_type=note_type,
         project=project,
@@ -205,6 +211,8 @@ def note(
     kb = kb_root(vault_root)
     writes: list[PlannedWrite] = [PlannedWrite(path=note_path, content=note_md)]
     warnings: list[str] = []
+    if slug_warning:
+        warnings.append(slug_warning)
 
     # Back-refs: append the new note's wikilink to each cited source's ingested_into.
     for src in sources_norm:
@@ -260,8 +268,8 @@ def note(
             date_iso=date_iso,
             summary=activity_summary,
         )
-        if trim_note:
-            warnings.append(f"Recent activity trimmed at cap-50: {trim_note}")
+        # trim_note still flows into the log entry body below — log.md is the
+        # paper trail for cap-50 displacement (SKILL.md trim discipline).
         writes.append(PlannedWrite(path=top_index, content=new_top))
     else:
         warnings.append("Knowledge Base/index.md missing; skipped Recent activity bump")
@@ -467,9 +475,9 @@ def _resolve_path(
     medium: str | None,
     started: str | None,
     date_iso: str,
-) -> Path:
+) -> tuple[Path, str | None]:
     kb = kb_root(vault_root)
-    slug = slugify_title(title)
+    slug, slug_warning = slugify_with_truncation_check(title)
     if note_type == "research-note":
         assert project is not None  # validated above
         folder = kb / "Notes" / "Research" / PROJECT_TO_FOLDER[project]
@@ -494,7 +502,7 @@ def _resolve_path(
     else:  # pragma: no cover — validation guards this
         raise ValueError(f"unhandled note_type: {note_type}")
     folder.mkdir(parents=True, exist_ok=True)
-    return unique_path(folder, stem)
+    return unique_path(folder, stem), slug_warning
 
 
 def _domain_folder(domain: str) -> str:
@@ -594,8 +602,6 @@ def _render_note(
     else:
         lines.append("tags: []")
     lines.append("---")
-    lines.append("")
-    lines.append(f"# {title.strip()}")
     lines.append("")
     lines.append(content.strip())
     lines.append("")

@@ -15,7 +15,7 @@ from slugify import slugify as _slugify
 DESKTOP_VAULT = Path(r"D:\Archive\Personal Archive\50 Notes\Obsidian")
 LAPTOP_VAULT = Path(r"C:\Users\win-laptop\Documents\Obsidian")
 
-SLUG_MAX_LENGTH = 60
+SLUG_MAX_LENGTH = 100
 
 
 def resolve_vault(env_var: str = "KB_MCP_VAULT_PATH") -> Path:
@@ -53,6 +53,24 @@ def slugify_title(title: str, max_length: int = SLUG_MAX_LENGTH) -> str:
     """Lowercase, dash-separated, alphanumeric-only, length-capped."""
     slug = _slugify(title, max_length=max_length, word_boundary=True, lowercase=True)
     return slug or "untitled"
+
+
+def slugify_with_truncation_check(
+    title: str, max_length: int = SLUG_MAX_LENGTH
+) -> tuple[str, str | None]:
+    """Return (slug, warning). `warning` is non-None if the slug was truncated.
+
+    The warning names both the truncated and full slug so the caller can
+    decide whether to abort, shorten the title, or accept.
+    """
+    slug = slugify_title(title, max_length=max_length)
+    full = _slugify(title, max_length=0, word_boundary=True, lowercase=True) or "untitled"
+    if slug != full:
+        return slug, (
+            f"slug truncated to {slug!r} (full would have been {full!r}); "
+            f"shorten the title if the truncation drops meaning"
+        )
+    return slug, None
 
 
 def unique_path(directory: Path, stem: str, suffix: str = ".md") -> Path:

@@ -192,13 +192,12 @@ def preserve(
 
         top_index = kb / "index.md"
         if top_index.exists():
-            new_top, trim_note = indexes._prepend_recent_activity(
+            new_top, _trim_note = indexes._prepend_recent_activity(
                 top_index.read_text(encoding="utf-8"),
                 date_iso=date_iso,
                 summary=activity_summary,
             )
-            if trim_note:
-                warnings.append(f"Recent activity trimmed at cap-50: {trim_note}")
+            # Cap-50 trim is recorded in log.md; no per-write warning needed.
             writes.append(PlannedWrite(path=top_index, content=new_top))
         else:
             warnings.append("Knowledge Base/index.md missing; skipped Recent activity bump")

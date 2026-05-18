@@ -105,7 +105,7 @@ def replace(
             missing=["old_path"],
             reason=str(e),
         ) from e
-    old_parsed = find_module._parse_page(old_resolved, mtime)
+    old_parsed = find_module._parse_page(old_resolved, mtime, vault_root)
     if old_parsed is None:
         raise ReplaceError(
             code="UNREADABLE",

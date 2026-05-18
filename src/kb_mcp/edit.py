@@ -117,7 +117,7 @@ def edit(
     except OSError as e:
         raise EditError(code="NOT_FOUND", missing=["path"], reason=str(e)) from e
 
-    parsed = find_module._parse_page(abs_path, mtime)
+    parsed = find_module._parse_page(abs_path, mtime, vault_root)
     if parsed is None:
         raise EditError(
             code="UNREADABLE",

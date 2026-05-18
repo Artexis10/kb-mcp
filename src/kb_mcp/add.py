@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import indexes, schema
-from .vault import PlannedWrite, batch_atomic_write, kb_root, slugify_title, unique_path
+from .vault import (
+    PlannedWrite,
+    batch_atomic_write,
+    kb_root,
+    slugify_with_truncation_check,
+    unique_path,
+)
 
 
 log = logging.getLogger(__name__)
@@ -96,7 +102,7 @@ def add(
     folder_name = SOURCE_TYPE_TO_FOLDER[source_type]
     folder_path = kb_root(vault_root) / "Sources" / folder_name
 
-    slug = slugify_title(title)
+    slug, slug_warning = slugify_with_truncation_check(title)
     stem = f"{date_iso}-{slug}"
     source_path = unique_path(folder_path, stem)
 
@@ -162,8 +168,10 @@ def add(
     ]
 
     warnings: list[str] = []
-    if update.trim_note:
-        warnings.append(f"Recent activity trimmed at cap-50: {update.trim_note}")
+    if slug_warning:
+        warnings.append(slug_warning)
+    # Cap-50 trim is recorded in log.md per SKILL.md trim discipline; no need
+    # to also surface it as a per-write warning.
 
     try:
         batch_atomic_write(writes)

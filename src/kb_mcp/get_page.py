@@ -102,7 +102,7 @@ def get_page(vault_root: Path, *, path: str) -> GetResult:
     except OSError as e:
         raise GetError(code="UNREADABLE", reason=str(e)) from e
 
-    parsed = find_module._parse_page(candidate, mtime)
+    parsed = find_module._parse_page(candidate, mtime, vault_root)
     if parsed is None:
         raise GetError(
             code="UNREADABLE",

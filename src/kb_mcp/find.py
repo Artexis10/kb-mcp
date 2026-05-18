@@ -122,7 +122,7 @@ class FrontmatterCache:
 
     entries: dict[Path, ParsedPage] = field(default_factory=dict)
 
-    def get(self, path: Path) -> ParsedPage | None:
+    def get(self, path: Path, vault_root: Path) -> ParsedPage | None:
         try:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
@@ -131,7 +131,7 @@ class FrontmatterCache:
         cached = self.entries.get(path)
         if cached and cached.mtime == mtime:
             return cached
-        parsed = _parse_page(path, mtime)
+        parsed = _parse_page(path, mtime, vault_root)
         if parsed is not None:
             self.entries[path] = parsed
         return parsed
@@ -162,7 +162,7 @@ def find(
 
     hits: list[tuple[str, Hit]] = []  # (sort_key, hit)
     for path in _walk_md(kb):
-        page = _CACHE.get(path)
+        page = _CACHE.get(path, vault_root)
         if page is None:
             continue
         if not _passes_filters(page, types=types, projects=projects, tags=tags):
@@ -170,12 +170,11 @@ def find(
         excerpt = _make_excerpt(page, query_norm)
         if query_norm and excerpt is None:
             continue
-        rel = path.relative_to(vault_root).as_posix()
         hits.append(
             (
                 page.updated or "0000-00-00",
                 Hit(
-                    path=rel,
+                    path=page.rel_path,
                     type=page.page_type,
                     scope=page.scope,
                     title=page.title,
@@ -201,7 +200,7 @@ def _walk_md(root: Path):
             yield child
 
 
-def _parse_page(path: Path, mtime: float) -> ParsedPage | None:
+def _parse_page(path: Path, mtime: float, vault_root: Path) -> ParsedPage | None:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
@@ -218,6 +217,12 @@ def _parse_page(path: Path, mtime: float) -> ParsedPage | None:
             log.warning("YAML parse error in %s: %s", path, e)
             frontmatter = {}
         body = fm_match.group(2)
+        # The FRONTMATTER_PATTERN consumes the closing `\n---\n` but not the
+        # blank line that conventionally follows. Strip a single leading `\n`
+        # so callers (notably `get`) can feed `body` back into `edit` without
+        # accumulating blanks across round-trips.
+        if body.startswith("\n"):
+            body = body[1:]
     else:
         frontmatter = {}
         body = text
@@ -225,11 +230,14 @@ def _parse_page(path: Path, mtime: float) -> ParsedPage | None:
     h1_match = H1_PATTERN.search(body)
     title = h1_match.group(1).strip() if h1_match else path.stem
 
-    # Vault-relative path: we want "Knowledge Base/..." not absolute.
-    # Caller resolves; we just store the path for find() to compute relpath.
+    try:
+        rel_path = path.resolve().relative_to(vault_root.resolve()).as_posix()
+    except ValueError:
+        rel_path = path.as_posix()
+
     return ParsedPage(
         path=path,
-        rel_path="",  # filled in find()
+        rel_path=rel_path,
         frontmatter=frontmatter,
         body=body,
         title=title,
@@ -270,7 +278,12 @@ def _all_projects(fm: dict) -> set[str]:
 
 
 def _make_excerpt(page: ParsedPage, query_norm: str) -> str | None:
-    """Return ~200-char snippet around the first body match; None if no query match.
+    """Return ~200-char snippet anchored to the query; None if no match.
+
+    Tokenizes the query on whitespace and requires every token to appear in
+    title or body (case-insensitive, any order). So `contract employment`
+    matches a page mentioning "employment contract" — natural-language
+    queries don't have to guess exact phrasing.
 
     If query is empty, returns the first ~200 chars of body (no match required).
     """
@@ -280,15 +293,29 @@ def _make_excerpt(page: ParsedPage, query_norm: str) -> str | None:
         return _collapse(snippet)
     title_norm = page.title.lower()
     body_norm = body.lower()
-    if query_norm in title_norm:
-        # Title match still gets a body excerpt for context.
+    tokens = query_norm.split()
+    if not tokens:
         snippet = body[:EXCERPT_MAX_LEN]
         return _collapse(snippet)
-    idx = body_norm.find(query_norm)
-    if idx == -1:
-        return None
-    start = max(0, idx - EXCERPT_RADIUS)
-    end = min(len(body), idx + len(query_norm) + EXCERPT_RADIUS)
+    # Every token must appear somewhere in title or body.
+    for tok in tokens:
+        if tok not in title_norm and tok not in body_norm:
+            return None
+    # Pick the anchor: first token's first body occurrence; if every token is
+    # title-only, return a leading body snippet for context.
+    anchor_idx = -1
+    anchor_len = 0
+    for tok in tokens:
+        idx = body_norm.find(tok)
+        if idx != -1:
+            anchor_idx = idx
+            anchor_len = len(tok)
+            break
+    if anchor_idx == -1:
+        snippet = body[:EXCERPT_MAX_LEN]
+        return _collapse(snippet)
+    start = max(0, anchor_idx - EXCERPT_RADIUS)
+    end = min(len(body), anchor_idx + anchor_len + EXCERPT_RADIUS)
     snippet = body[start:end]
     if start > 0:
         snippet = "…" + snippet.lstrip()

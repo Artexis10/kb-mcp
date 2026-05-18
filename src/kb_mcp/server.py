@@ -137,7 +137,10 @@ def build_server(*, require_auth: bool) -> FastMCP:
         """Search the Knowledge Base. Filters are AND'd; tag/project lists are OR'd within.
 
         Args:
-            query: Case-insensitive substring matched against title + body. Empty string returns most-recent filtered hits.
+            query: Case-insensitive. Tokenized on whitespace; every token must
+                appear somewhere in title or body (any order). So
+                `contract employment` matches a page about "employment contract".
+                Empty string returns most-recent filtered hits.
             types: Filter to these page types (source, research-note, insight, failure, pattern, experiment, production-log, entity).
             projects: Filter to pages whose `project` or `projects:` includes any of these keys.
             tags: Filter to pages whose `tags:` includes any of these (case-insensitive).
@@ -178,6 +181,8 @@ def build_server(*, require_auth: bool) -> FastMCP:
             url: Required when source_type is article, paper, or video.
             tags: Lowercase dash-separated; the server normalizes case/spacing.
             why_captured: One short paragraph on why this is worth keeping.
+                Rendered as a leading blockquote in the source body, between
+                the `# Source: ...` header and the `## Capture` section.
 
         Returns:
             {path, warnings}. On schema violation, raises a structured error
@@ -257,7 +262,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
         source's `ingested_into:` frontmatter (maintaining the source→note graph).
 
         Args:
-            content: Full markdown body. Body section conventions per type:
+            content: Full markdown body, written verbatim after the
+                frontmatter. Should start with `# <title>` (the H1 matching
+                the title arg) followed by the section conventions per type:
                 research-note: `## Question`/`## Findings`/`## Connections`.
                 insight: `## Claim`/`## Why it holds`/`## Connections`.
                 failure: `## What happened`/`## Mechanism`/`## Detection`/`## Mitigation`/`## Connections`.
