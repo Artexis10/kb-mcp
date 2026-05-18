@@ -279,9 +279,20 @@ Or omit `categories` to run all four checks. Returns:
 
 Read-only — never writes. Use the findings to drive follow-up `note`/`add`
 calls (e.g. compile from unprocessed sources, retarget broken wikilinks).
-v1 categories: `broken_wikilink`, `orphan_entity`, `unprocessed_source`,
-`index_drift`. More checks (supersession integrity, experiment lifecycle,
-stale hubs) deferred.
+Categories: `broken_wikilink`, `orphan_entity`, `unprocessed_source`,
+`index_drift`, `tag_inconsistency`. More checks (supersession integrity,
+experiment lifecycle, stale hubs) deferred.
+
+The `tag_inconsistency` check catches mechanical drift like
+`warning-letter-incident` vs `warning_letter_incident` vs `Warning-Letter-Incident`:
+same logical tag, multiple spellings, ungroupable without normalization. It
+reports each cluster with a proposed canonical (most-used variant) plus the
+list of pages using each variant. Semantic near-duplicates (`metabolism` vs
+`metabolic`) are NOT flagged — that needs human judgment. Singleton tags
+aren't flagged either (too noisy in practice; a healthy KB has many
+genuinely-unique one-offs). Source pages are immutable per rule 2 — fixing
+source tags isn't possible; the audit reports them anyway so a desk-side
+compilation pass can normalize forward via downstream compiled pages.
 
 ### `get`
 

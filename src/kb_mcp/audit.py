@@ -27,7 +27,8 @@ from .vault import kb_root
 log = logging.getLogger(__name__)
 
 ALL_CATEGORIES: tuple[str, ...] = (
-    "broken_wikilink", "orphan_entity", "unprocessed_source", "index_drift",
+    "broken_wikilink", "orphan_entity", "unprocessed_source",
+    "index_drift", "tag_inconsistency",
 )
 
 # Matches [[Target]] or [[Target|Alias]]. Target may contain '/' for paths.
@@ -101,6 +102,8 @@ def audit(
         findings.extend(_check_unprocessed_sources(vault_root, pages))
     if "index_drift" in selected:
         findings.extend(_check_index_drift(vault_root))
+    if "tag_inconsistency" in selected:
+        findings.extend(_check_tag_inconsistency(pages))
 
     summary: dict[str, int] = {}
     for f in findings:
@@ -313,6 +316,93 @@ def _check_index_drift(vault_root: Path) -> list[AuditFinding]:
                     "auto-fix is supported)."
                 ),
             ))
+    return findings
+
+
+# ---------------- check: tag_inconsistency ----------------
+
+
+_TAG_NORMALIZE_PATTERN = re.compile(r"[\s_]+")
+
+
+def _normalize_tag(tag: str) -> str:
+    """Lowercase + collapse whitespace/underscores to dashes for cluster keying.
+
+    `Warning-Letter-Incident`, `warning_letter_incident`, `warning  letter  incident`
+    all normalize to `warning-letter-incident`.
+    """
+    return _TAG_NORMALIZE_PATTERN.sub("-", tag.strip().lower())
+
+
+def _extract_tags(value) -> list[str]:
+    """Pull tags out of a frontmatter `tags:` value (string, list, or nested)."""
+    out: list[str] = []
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+    return out
+
+
+def _check_tag_inconsistency(
+    pages: list[find_module.ParsedPage],
+) -> list[AuditFinding]:
+    """Detect variant clusters: distinct raw tags that normalize to the same
+    key (e.g. `warning_letter_incident` vs `warning-letter-incident` vs
+    `Warning-Letter-Incident`).
+
+    Only mechanical drift (case + separator) is detected. Semantic
+    near-duplicates like `metabolism` vs `metabolic` are NOT flagged — that
+    needs human or LLM judgment.
+
+    Singleton tags (used exactly once) are NOT flagged — too noisy in
+    practice (a healthy KB has many genuinely-unique one-offs).
+
+    Source pages are immutable per rule 2, so their tags can't be fixed in
+    place. The finding's proposed_fix names the compiled-material rewrite path.
+    """
+    findings: list[AuditFinding] = []
+
+    # raw_tag -> list of pages using it
+    raw_to_pages: dict[str, list[str]] = {}
+    for page in pages:
+        for raw in _extract_tags(page.frontmatter.get("tags")):
+            raw_to_pages.setdefault(raw, []).append(page.rel_path)
+
+    # Group raw tags by normalized key.
+    norm_to_raws: dict[str, list[str]] = {}
+    for raw in raw_to_pages:
+        norm_to_raws.setdefault(_normalize_tag(raw), []).append(raw)
+
+    # Variant clusters: normalized keys with >1 raw variant.
+    for raws in norm_to_raws.values():
+        if len(raws) < 2:
+            continue
+        # Canonical = the most-used raw variant; ties broken by lex order.
+        canonical = max(raws, key=lambda r: (len(raw_to_pages[r]), r))
+        for raw in raws:
+            if raw == canonical:
+                continue
+            using_pages = raw_to_pages[raw]
+            findings.append(AuditFinding(
+                category="tag_inconsistency",
+                severity="info",
+                path=using_pages[0],  # representative; full list in detail
+                detail=(
+                    f"Tag {raw!r} (used in {len(using_pages)} page(s)) is a variant "
+                    f"of {canonical!r} (used in {len(raw_to_pages[canonical])} page(s)). "
+                    f"Using pages: {using_pages}"
+                ),
+                proposed_fix=(
+                    f"Normalize {raw!r} → {canonical!r}. For compiled material, "
+                    "rewrite the tag via `replace`. Source pages are immutable per "
+                    "SKILL.md rule 2; normalize forward via downstream compiled "
+                    "pages that cite them."
+                ),
+            ))
+
     return findings
 
 

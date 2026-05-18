@@ -343,10 +343,14 @@ def build_server(*, require_auth: bool) -> FastMCP:
         - `unprocessed_source`: source with empty `ingested_into:` (no notes
           have compiled from it yet)
         - `index_drift`: top-level `index.md` Counts disagree with on-disk counts
+        - `tag_inconsistency`: case/separator variants of the same tag
+          (`warning_letter_incident` vs `warning-letter-incident` vs
+          `Warning-Letter-Incident`). Mechanical drift only; semantic
+          near-duplicates like `metabolism` vs `metabolic` aren't flagged.
 
         Args:
             categories: Optional filter; only run these checks. Each must be
-                one of the four above. Omit to run all.
+                one of the five above. Omit to run all.
 
         Returns:
             {findings: [{category, severity, path, detail, proposed_fix}],
