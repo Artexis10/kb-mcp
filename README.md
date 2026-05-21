@@ -152,6 +152,31 @@ pwsh -File scripts/install-service.ps1
    `KB_MCP_GITHUB_USERNAME` is allowed) → approve consent → redirects back
    to claude.ai. Tools `find` and `add` appear in the palette.
 
+## Deploying on a second machine (multi-host)
+
+Each machine is an independent deployment — there is no shared state. To run kb-mcp
+on a second box (e.g. a laptop alongside the desktop), repeat the install with that
+host's *own* values. The non-obvious parts:
+
+- **Its own Funnel hostname.** Each Tailscale node has a distinct
+  `<node>.<tailnet>.ts.net`, so `KB_MCP_BASE_URL` and the claude.ai connector URL are
+  per-host. `tailscale funnel status` prints this node's name.
+- **Its own GitHub OAuth App.** A GitHub OAuth App allows exactly **one**
+  Authorization callback URL, so you *cannot* reuse another host's app — its callback
+  points at the other host and GitHub rejects the redirect with "The redirect_uri is
+  not associated with this application." Create a second app (e.g. `kb-mcp (laptop)`)
+  with callback `https://<this-host>.<tailnet>.ts.net/auth/callback` and put *its*
+  `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in this machine's `.env`.
+- **Its own `.env` and connector.** The vault path auto-resolves per machine (see the
+  desktop/laptop constants in `src/kb_mcp/vault.py`); override with `KB_MCP_VAULT_PATH`
+  if needed. In claude.ai, add a separate connector pointing at this host's `/mcp` URL
+  (the URL usually isn't editable in place, so delete + re-add to repoint).
+
+The deployments coexist — claude.ai talks to whichever host's connector you invoke,
+and only that host needs to be awake. After editing `.env`, restart the service so it
+reloads: `sc.exe stop kb-mcp; sc.exe start kb-mcp` (the installer grants no-UAC
+start/stop rights, so this needs no elevation once installed correctly).
+
 ## Tool reference
 
 ### `find`
@@ -501,9 +526,12 @@ sc.exe start kb-mcp
 |---|---|---|
 | claude.ai "Couldn't reach the MCP server" during connector add | OAuth discovery failed | `curl.exe -i https://<funnel-url>/.well-known/oauth-authorization-server` should return JSON. If 404, the OAuthProxy isn't mounted — most likely `KB_MCP_BASE_URL` has a trailing slash or includes `/mcp`. |
 | GitHub redirects to "The redirect_uri MUST match…" error | OAuth App callback URL mismatch | At github.com/settings/developers → kb-mcp, set Authorization callback URL to exactly `https://<funnel-url>/auth/callback` (no trailing slash). |
+| GitHub: "The redirect_uri is not associated with this application" on a *second* machine | Reused another host's OAuth App client ID/secret in this machine's `.env` (the app's one callback points at the other host) | Create a per-host OAuth App with callback `https://<this-host>.<tailnet>.ts.net/auth/callback`, put its client ID/secret in this `.env`, restart the service. See § Deploying on a second machine. |
 | claude.ai connector connects but every tool call returns 401 | Wrong GitHub user | `KB_MCP_GITHUB_USERNAME` must equal the login of the GitHub account you authorized with. Check the kb-mcp log for `rejecting token for github login=...`. |
 | claude.ai shows "connector failed" | service down (desktop asleep, service stopped, crash loop) | `Get-Service kb-mcp`; tail `logs/service.err.log` and `logs/kb-mcp.log`. Multiple startup banners within seconds = orphan python processes — kill them and force-restart. |
 | Edits to `.env` not picked up | service didn't restart, or UAC dismissed | Elevated: `Start-Process -Verb RunAs -Wait sc.exe -ArgumentList 'stop','kb-mcp'` then `'start','kb-mcp'`. Confirm with `Get-Process python \| Select-Object StartTime`. |
+| `sc.exe stop/start kb-mcp` → "OpenService FAILED 5: Access is denied" from a normal admin shell | The no-UAC start/stop grant never applied — usually because the install ran non-elevated (UAC on → filtered token), so the `sc sdset` grant (and the `nssm set` calls) were silently denied | Re-run `scripts/install-service.ps1` (it self-elevates now); that reapplies the grant, `AppDirectory`, and log redirects. Verify with `sc.exe sdshow kb-mcp` — look for a trailing `(A;;RPWPCR;;;S-1-5-21…)` ACE. |
+| `logs/service.err.log` / `service.out.log` missing | The `nssm set … AppStdout/AppStderr` calls were denied during a non-elevated install | Re-run the installer elevated (it self-elevates now); the log-redirect settings only take with a full admin token. |
 | 404 / Funnel "no service" | Tailscale Funnel disabled or pointing at wrong port | `tailscale funnel status`; re-run the funnel command in the install instructions |
 | `KB vault not found` on startup | desktop vault path moved or `KB_MCP_VAULT_PATH` wrong | set `KB_MCP_VAULT_PATH` to the absolute vault root in `.env` |
 | Schema parse error on startup | `_Schema/references/frontmatter.md` shape changed | diff against the version that was working; the parser is conservative on purpose |

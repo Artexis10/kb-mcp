@@ -3,7 +3,8 @@
 # Prereqs:
 #   - NSSM installed (https://nssm.cc/download) and on PATH, OR pass -NssmPath.
 #   - uv has been run (`uv sync` in repo root) so .venv exists.
-#   - .env exists in the repo root with KB_MCP_BEARER_TOKEN set.
+#   - .env exists in the repo root with the GitHub OAuth vars set
+#     (KB_MCP_BASE_URL, KB_MCP_GITHUB_USERNAME, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET).
 #
 # Usage:
 #   pwsh -File scripts/install-service.ps1
@@ -22,6 +23,28 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Service install/config needs a full admin token. With UAC enabled, a normal admin
+# shell gets a *filtered* token and the nssm/sc calls fail ("Administrator access is
+# needed" / "Access is denied") -- while the script's later Write-Host lines still
+# print, making a failed run look like it succeeded. Self-elevate so behaviour is
+# identical whether UAC is on (filtered token) or off (full token).
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "Not elevated - relaunching as administrator (approve the UAC prompt)..."
+    $hostExe = (Get-Process -Id $PID).Path
+    if (-not $hostExe) { $hostExe = "pwsh" }
+    $relaunchArgs = @(
+        "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`"",
+        "-NssmPath", "`"$NssmPath`"",
+        "-ServiceName", $ServiceName,
+        "-BindHost", $BindHost,
+        "-Port", $Port
+    )
+    Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList $relaunchArgs
+    exit
+}
+
 $repoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $logDir = Join-Path $repoRoot "logs"
@@ -30,7 +53,7 @@ if (-not (Test-Path $python)) {
     throw "Python venv not found at $python. Run 'uv sync' in $repoRoot first."
 }
 if (-not (Test-Path (Join-Path $repoRoot ".env"))) {
-    throw ".env file missing in $repoRoot. Generate a token with scripts/generate-token.ps1 first."
+    throw ".env file missing in $repoRoot. See the Install section of README.md for the required GitHub OAuth vars."
 }
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 
