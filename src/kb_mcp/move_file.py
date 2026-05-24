@@ -178,6 +178,33 @@ def move_file(
             f"Delete it manually on the desk."
         )
 
+    # If we just moved a file out of `_trash/`, its `.meta.json` sidecar (if
+    # any) is now an orphan. Drop the sidecar — recovery is "removed from
+    # trash," not "trash entry that points nowhere." For trash → trash
+    # moves we leave it alone (the sidecar is still valid).
+    parts = old_rel.split("/")
+    moved_out_of_trash = (
+        len(parts) >= 2 and parts[0] == "Knowledge Base" and parts[1] == "_trash"
+    )
+    new_parts = new_rel.split("/")
+    moved_into_trash = (
+        len(new_parts) >= 2 and new_parts[0] == "Knowledge Base"
+        and new_parts[1] == "_trash"
+    )
+    if moved_out_of_trash and not moved_into_trash:
+        sidecar = old_abs.parent / f"{old_abs.name}.meta.json"
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+                warnings.append(
+                    f"removed orphan trash sidecar: {sidecar.name}"
+                )
+            except OSError as e:
+                warnings.append(
+                    f"recovered file but could not remove orphan sidecar "
+                    f"{sidecar.name!r}: {e}"
+                )
+
     today = today or dt.date.today()
     date_iso = today.isoformat()
     new_rel_no_ext = new_rel.removesuffix(".md") if new_rel.endswith(".md") else new_rel

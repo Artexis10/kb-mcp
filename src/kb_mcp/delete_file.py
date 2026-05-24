@@ -48,6 +48,7 @@ TRASH_SUBPATH = "_trash"
 class DeleteFileResult:
     path: str
     trash_path: str
+    trash_meta_path: str
     inbound_link_count: int
     inbound_ignored_count: int
     warnings: list[str]
@@ -56,6 +57,7 @@ class DeleteFileResult:
         return {
             "path": self.path,
             "trash_path": self.trash_path,
+            "trash_meta_path": self.trash_meta_path,
             "inbound_link_count": self.inbound_link_count,
             "inbound_ignored_count": self.inbound_ignored_count,
             "warnings": self.warnings,
@@ -279,9 +281,15 @@ def delete_file(
     if log_warning:
         warnings.append(log_warning)
 
+    try:
+        trash_meta_rel = meta_abs.resolve().relative_to(vault_root.resolve()).as_posix()
+    except (ValueError, OSError):
+        trash_meta_rel = ""
+
     return DeleteFileResult(
         path=rel_path,
         trash_path=trash_rel,
+        trash_meta_path=trash_meta_rel,
         inbound_link_count=len(inbound),
         inbound_ignored_count=len(inbound_ignored),
         warnings=warnings,

@@ -49,6 +49,12 @@ files outside the typed-note set, or surgical edits.
 - `delete_directory` — **trash** a folder (whole tree). Same `_trash/`
   semantics. Requires `confirm=true`; non-empty dirs need
   `recursive=true`; external inbound links require `force_orphan=true`.
+- `list_trash` — enumerate recoverable trash entries with original path,
+  timestamp, and force-flags used. Also surfaces drift (orphan sidecars,
+  orphan files). Read-only.
+- `recover_from_trash` — undo a delete. Reads the sidecar to find the
+  original location, moves the file/dir back, cleans up the sidecar.
+  Optional `restore_path` override for renamed/relocated recovery.
 - `append_to_file` — append text. Refuses on Sources/.
 - `get_frontmatter` — read just the frontmatter (no body). Read-only.
 - `set_frontmatter_field` — patch one frontmatter field; always bumps

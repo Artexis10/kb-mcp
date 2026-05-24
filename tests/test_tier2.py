@@ -20,8 +20,11 @@ from kb_mcp import delete_file as delete_module
 from kb_mcp import get_frontmatter as get_fm_module
 from kb_mcp import list_directory as list_dir_module
 from kb_mcp import list_inbound_links as inbound_module
+from kb_mcp import list_trash as list_trash_module
 from kb_mcp import move_file as move_module
+from kb_mcp import recover_from_trash as recover_module
 from kb_mcp import set_frontmatter_field as set_fm_module
+from kb_mcp import get_page as get_module
 
 
 TODAY = dt.date(2026, 5, 24)
@@ -618,6 +621,124 @@ def test_delete_directory_refuses_when_external_inbound_exists(vault: Path) -> N
             confirm=True, recursive=True, today=TODAY,
         )
     assert exc.value.code == "INBOUND_LINKS"
+
+
+# ---------------- list_trash + recover_from_trash + sidecar cleanup ----------------
+
+
+def _trash_a_file(vault: Path, rel: str) -> tuple[str, str]:
+    """Helper: trash a fixture file, return (trash_path, meta_path)."""
+    abs_path = vault / rel
+    if not abs_path.exists():
+        abs_path.write_text(
+            "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# x\n",
+            encoding="utf-8",
+        )
+    result = delete_module.delete_file(
+        vault, path=rel, confirm=True, today=TODAY,
+    )
+    return result.trash_path, result.trash_meta_path
+
+
+def test_delete_file_response_surfaces_meta_path(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/m1.md"
+    tp, mp = _trash_a_file(vault, rel)
+    assert tp.startswith("Knowledge Base/_trash/")
+    assert mp.endswith(".meta.json")
+    assert (vault / mp).exists()
+
+
+def test_list_trash_returns_entries_with_original_paths(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/lt-target.md"
+    _trash_a_file(vault, rel)
+    result = list_trash_module.list_trash(vault)
+    assert result.count >= 1
+    matching = [e for e in result.entries if e.original_path == rel]
+    assert len(matching) == 1
+    e = matching[0]
+    assert e.kind == "file"
+    assert e.trashed_at  # nonempty ISO string
+    assert e.trash_path.startswith("Knowledge Base/_trash/")
+    assert e.meta_path.endswith(".meta.json")
+
+
+def test_list_trash_surfaces_orphan_sidecars(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/orphan-target.md"
+    tp, mp = _trash_a_file(vault, rel)
+    # Delete the trashed file but leave the sidecar — simulates legacy state
+    (vault / tp).unlink()
+    result = list_trash_module.list_trash(vault)
+    assert mp in result.orphan_sidecars
+
+
+def test_recover_from_trash_restores_to_original(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/rec-target.md"
+    tp, mp = _trash_a_file(vault, rel)
+    assert not (vault / rel).exists()
+    result = recover_module.recover_from_trash(
+        vault, trash_path=tp, today=TODAY,
+    )
+    assert result.restored_path == rel
+    assert (vault / rel).exists()
+    # Sidecar removed
+    assert not (vault / mp).exists()
+
+
+def test_recover_from_trash_refuses_existing_dest(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/dup-target.md"
+    tp, _ = _trash_a_file(vault, rel)
+    # Recreate the original path so recovery would overwrite
+    (vault / rel).write_text("# new version\n", encoding="utf-8")
+    with pytest.raises(recover_module.RecoverError) as exc:
+        recover_module.recover_from_trash(vault, trash_path=tp, today=TODAY)
+    assert exc.value.code == "DEST_EXISTS"
+
+
+def test_recover_from_trash_to_custom_path(vault: Path) -> None:
+    rel = "Knowledge Base/Notes/Insights/cp-target.md"
+    tp, _ = _trash_a_file(vault, rel)
+    custom = "Knowledge Base/Notes/Insights/cp-renamed.md"
+    result = recover_module.recover_from_trash(
+        vault, trash_path=tp, restore_path=custom, today=TODAY,
+    )
+    assert result.restored_path == custom
+    assert (vault / custom).exists()
+    assert not (vault / rel).exists()
+
+
+def test_recover_from_trash_refuses_non_trash_paths(vault: Path) -> None:
+    with pytest.raises(recover_module.RecoverError) as exc:
+        recover_module.recover_from_trash(
+            vault,
+            trash_path="Knowledge Base/Notes/Insights/progressive-disclosure-without-mode-fragmentation.md",
+            today=TODAY,
+        )
+    assert exc.value.code == "NOT_IN_TRASH"
+
+
+def test_move_file_from_trash_also_removes_sidecar(vault: Path) -> None:
+    """Regression: move_file out of _trash/ used to orphan the .meta.json."""
+    rel = "Knowledge Base/Notes/Insights/mv-target.md"
+    tp, mp = _trash_a_file(vault, rel)
+    move_module.move_file(
+        vault, old_path=tp, new_path=rel, today=TODAY,
+    )
+    assert (vault / rel).exists()
+    assert not (vault / mp).exists(), "sidecar should be removed when moving out of trash"
+
+
+# ---------------- get extension auto-append bug fix ----------------
+
+
+def test_get_does_not_append_md_when_extension_present(vault: Path) -> None:
+    """Regression: `get` used to append .md unconditionally, so trash
+    sidecars (.meta.json) couldn't be read through the MCP."""
+    rel = "Knowledge Base/Notes/Insights/ga-target.md"
+    tp, mp = _trash_a_file(vault, rel)
+    # Reading a .meta.json should succeed without .md being appended
+    result = get_module.get_page(vault, path=mp)
+    assert result.path == mp
+    assert "original_path" in result.content
 
 
 # ---------------- list_inbound_links extras ----------------

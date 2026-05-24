@@ -44,9 +44,11 @@ from . import get_page as get_page_module
 from . import link as link_module
 from . import list_directory as list_directory_module
 from . import list_inbound_links as list_inbound_links_module
+from . import list_trash as list_trash_module
 from . import move_file as move_file_module
 from . import note as note_module
 from . import preserve as preserve_module
+from . import recover_from_trash as recover_from_trash_module
 from . import replace as replace_module
 from . import schema
 from . import set_frontmatter_field as set_frontmatter_field_module
@@ -1151,6 +1153,68 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 allow_curated=allow_curated,
             )
         except set_frontmatter_field_module.SetFrontmatterError as e:
+            raise ValueError(f"{e.code}: {e.reason}") from e
+        return result.as_dict()
+
+    @mcp.tool
+    def list_trash(date: str | None = None) -> dict:
+        """Tier 2: enumerate recoverable trash entries. Read-only.
+
+        Walks Knowledge Base/_trash/YYYY-MM-DD/ and parses each .meta.json
+        sidecar. Returns entries most-recent-first with original path,
+        timestamp, kind (file or directory), and which force-flags fired
+        at trash time. Also surfaces drift: orphan_sidecars (sidecars with
+        no target file) and orphan_files (trashed files with no sidecar).
+        Pair with `recover_from_trash` to undo.
+
+        Args:
+            date: Optional YYYY-MM-DD filter to scope to one day.
+
+        Returns: {entries: [{trash_path, meta_path, original_path,
+                 trashed_at, kind, file_count, ...}], count,
+                 orphan_sidecars, orphan_files}.
+        """
+        result = list_trash_module.list_trash(vault_root, date=date)
+        return result.as_dict()
+
+    @mcp.tool
+    def recover_from_trash(
+        trash_path: str,
+        restore_path: str | None = None,
+        allow_curated: bool = False,
+    ) -> dict:
+        """Tier 2: undo a delete_file/delete_directory.
+
+        Reads the .meta.json sidecar to discover where the file lived
+        before being trashed, moves it back there, and cleans up the
+        sidecar. If `restore_path` is provided, uses that instead of the
+        sidecar's original location (useful when the original parent
+        directory has been removed).
+
+        Refuses to overwrite existing files at the restore destination.
+        Refuses restore into Sources/Evidence (append-only). Curated trees
+        need `allow_curated=true`.
+
+        Args:
+            trash_path: Vault-relative path to the trashed entry
+                (under `Knowledge Base/_trash/...`).
+            restore_path: Optional override; defaults to the original
+                location from the sidecar.
+            allow_curated: Required if restoring into a curated tree.
+
+        Returns: {trash_path, restored_path, kind, warnings}.
+        Errors: INVALID_PATH; NOT_FOUND; NOT_IN_TRASH; NO_RESTORE_PATH;
+                RESTORE_INTO_TRASH; APPEND_ONLY; CURATED_PROTECTED;
+                DEST_EXISTS; RECOVER_FAILED.
+        """
+        try:
+            result = recover_from_trash_module.recover_from_trash(
+                vault_root,
+                trash_path=trash_path,
+                restore_path=restore_path,
+                allow_curated=allow_curated,
+            )
+        except recover_from_trash_module.RecoverError as e:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 

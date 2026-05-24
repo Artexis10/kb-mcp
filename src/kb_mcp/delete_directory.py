@@ -42,6 +42,7 @@ TRASH_SUBPATH = "_trash"
 class DeleteDirectoryResult:
     path: str
     trash_path: str
+    trash_meta_path: str
     file_count: int
     inbound_link_count: int
     warnings: list[str]
@@ -50,6 +51,7 @@ class DeleteDirectoryResult:
         return {
             "path": self.path,
             "trash_path": self.trash_path,
+            "trash_meta_path": self.trash_meta_path,
             "file_count": self.file_count,
             "inbound_link_count": self.inbound_link_count,
             "warnings": self.warnings,
@@ -246,9 +248,15 @@ def delete_directory(
     if log_warning:
         warnings.append(log_warning)
 
+    try:
+        trash_meta_rel = meta_abs.resolve().relative_to(vault_root.resolve()).as_posix()
+    except (ValueError, OSError):
+        trash_meta_rel = ""
+
     return DeleteDirectoryResult(
         path=rel_path,
         trash_path=trash_rel,
+        trash_meta_path=trash_meta_rel,
         file_count=len(files),
         inbound_link_count=inbound_total,
         warnings=warnings,
