@@ -15,6 +15,7 @@ import pytest
 from kb_mcp import append_to_file as append_module
 from kb_mcp import create_directory as mkdir_module
 from kb_mcp import create_file as create_file_module
+from kb_mcp import delete_directory as rmdir_module
 from kb_mcp import delete_file as delete_module
 from kb_mcp import get_frontmatter as get_fm_module
 from kb_mcp import list_directory as list_dir_module
@@ -358,7 +359,7 @@ def test_delete_file_refuses_sources(vault: Path) -> None:
 
 
 def test_delete_file_happy_path_for_orphan(vault: Path) -> None:
-    # Create a file with no inbound links, then delete it.
+    # Create a file with no inbound links, then trash it.
     target = vault / "Knowledge Base" / "Notes" / "Insights" / "throwaway.md"
     target.write_text(
         "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n"
@@ -371,8 +372,57 @@ def test_delete_file_happy_path_for_orphan(vault: Path) -> None:
         confirm=True,
         today=TODAY,
     )
+    # Original gone, trash copy present, meta sidecar present
     assert not target.exists()
     assert result.inbound_link_count == 0
+    assert result.trash_path.startswith("Knowledge Base/_trash/")
+    trash_abs = vault / result.trash_path
+    assert trash_abs.exists()
+    assert (trash_abs.parent / f"{trash_abs.name}.meta.json").exists()
+
+
+def test_delete_file_refuses_already_trashed(vault: Path) -> None:
+    # First trash a file, then try to trash the trash entry.
+    target = vault / "Knowledge Base" / "Notes" / "Insights" / "x.md"
+    target.write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# X\n",
+        encoding="utf-8",
+    )
+    first = delete_module.delete_file(
+        vault, path="Knowledge Base/Notes/Insights/x.md",
+        confirm=True, today=TODAY,
+    )
+    with pytest.raises(delete_module.DeleteFileError) as exc:
+        delete_module.delete_file(
+            vault, path=first.trash_path, confirm=True, today=TODAY,
+        )
+    assert exc.value.code == "ALREADY_TRASHED"
+
+
+def test_delete_file_expected_dead_inbound_ignores_listed_referrers(vault: Path) -> None:
+    # Two files in a chain: a → b. Trash b normally requires force_orphan,
+    # but expected_dead_inbound=[a] should let it through without it.
+    target = vault / "Knowledge Base" / "Notes" / "Insights" / "b.md"
+    target.write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# B\n",
+        encoding="utf-8",
+    )
+    referrer = vault / "Knowledge Base" / "Notes" / "Insights" / "a.md"
+    referrer.write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n"
+        "# A\n\nLinks to [[Knowledge Base/Notes/Insights/b]].\n",
+        encoding="utf-8",
+    )
+    result = delete_module.delete_file(
+        vault,
+        path="Knowledge Base/Notes/Insights/b.md",
+        confirm=True,
+        expected_dead_inbound=["Knowledge Base/Notes/Insights/a.md"],
+        today=TODAY,
+    )
+    assert not target.exists()
+    assert result.inbound_link_count == 0
+    assert result.inbound_ignored_count == 1
 
 
 # ---------------- append_to_file ----------------
@@ -484,6 +534,93 @@ def test_list_inbound_links_finds_matches(vault: Path) -> None:
     assert result.count >= 1
     inbound_paths = {hit["path"] for hit in result.inbound}
     assert any("referrer" in p for p in inbound_paths)
+
+
+# ---------------- delete_directory ----------------
+
+
+def test_delete_directory_trashes_empty_dir(vault: Path) -> None:
+    empty = vault / "Knowledge Base" / "Scratch" / "today"
+    empty.mkdir(parents=True)
+    result = rmdir_module.delete_directory(
+        vault, path="Knowledge Base/Scratch/today", confirm=True, today=TODAY,
+    )
+    assert not empty.exists()
+    assert result.trash_path.startswith("Knowledge Base/_trash/")
+    assert (vault / result.trash_path).is_dir()
+
+
+def test_delete_directory_refuses_unconfirmed(vault: Path) -> None:
+    (vault / "Knowledge Base" / "Scratch" / "x").mkdir(parents=True)
+    with pytest.raises(rmdir_module.DeleteDirectoryError) as exc:
+        rmdir_module.delete_directory(
+            vault, path="Knowledge Base/Scratch/x", confirm=False, today=TODAY,
+        )
+    assert exc.value.code == "UNCONFIRMED"
+
+
+def test_delete_directory_refuses_non_empty_without_recursive(vault: Path) -> None:
+    d = vault / "Knowledge Base" / "Scratch" / "today"
+    d.mkdir(parents=True)
+    (d / "file.md").write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(rmdir_module.DeleteDirectoryError) as exc:
+        rmdir_module.delete_directory(
+            vault, path="Knowledge Base/Scratch/today", confirm=True, today=TODAY,
+        )
+    assert exc.value.code == "NOT_EMPTY"
+
+
+def test_delete_directory_recursive_trashes_whole_tree(vault: Path) -> None:
+    d = vault / "Knowledge Base" / "Scratch" / "today"
+    d.mkdir(parents=True)
+    (d / "file.md").write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# x\n",
+        encoding="utf-8",
+    )
+    result = rmdir_module.delete_directory(
+        vault, path="Knowledge Base/Scratch/today",
+        confirm=True, recursive=True, today=TODAY,
+    )
+    assert not d.exists()
+    assert result.file_count == 1
+    assert (vault / result.trash_path / "file.md").exists()
+
+
+def test_delete_directory_refuses_sources(vault: Path) -> None:
+    with pytest.raises(rmdir_module.DeleteDirectoryError) as exc:
+        rmdir_module.delete_directory(
+            vault, path="Knowledge Base/Sources/Articles",
+            confirm=True, recursive=True, today=TODAY,
+        )
+    assert exc.value.code == "APPEND_ONLY"
+
+
+def test_delete_directory_refuses_when_external_inbound_exists(vault: Path) -> None:
+    d = vault / "Knowledge Base" / "Scratch" / "x"
+    d.mkdir(parents=True)
+    (d / "inside.md").write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n# inside\n",
+        encoding="utf-8",
+    )
+    # External referrer (lives outside the doomed tree).
+    referrer = vault / "Knowledge Base" / "Notes" / "Insights" / "ref.md"
+    referrer.write_text(
+        "---\ntype: insight\ncreated: 2026-05-23\nupdated: 2026-05-23\ntags: []\n---\n"
+        "[[Knowledge Base/Scratch/x/inside]]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(rmdir_module.DeleteDirectoryError) as exc:
+        rmdir_module.delete_directory(
+            vault, path="Knowledge Base/Scratch/x",
+            confirm=True, recursive=True, today=TODAY,
+        )
+    assert exc.value.code == "INBOUND_LINKS"
+
+
+# ---------------- list_inbound_links extras ----------------
 
 
 def test_list_inbound_links_returns_empty_for_unreferenced(vault: Path) -> None:

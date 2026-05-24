@@ -20,7 +20,7 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-EXCLUDED_DIR_NAMES = frozenset({"_Schema", "_attachments", "_archive"})
+EXCLUDED_DIR_NAMES = frozenset({"_Schema", "_attachments", "_archive", "_trash"})
 FRONTMATTER_PATTERN = re.compile(r"^---\n(.*?)\n---\n(.*)", re.DOTALL)
 H1_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
 

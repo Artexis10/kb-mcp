@@ -49,7 +49,7 @@ APPEND_ONLY_KB_SUBPATHS: tuple[str, ...] = (
 
 # When scanning the full vault for inbound wikilinks, skip these.
 VAULT_SCAN_SKIP_DIRS = frozenset({
-    ".obsidian", ".git", ".trash", "_attachments", "_archive",
+    ".obsidian", ".git", ".trash", "_attachments", "_archive", "_trash",
 })
 
 # `[[Target]]` or `[[Target|Alias]]`.

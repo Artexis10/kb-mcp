@@ -34,6 +34,7 @@ from . import append_to_file as append_to_file_module
 from . import audit as audit_module
 from . import create_directory as create_directory_module
 from . import create_file as create_file_module
+from . import delete_directory as delete_directory_module
 from . import delete_file as delete_file_module
 from . import edit as edit_module
 from . import find as find_module
@@ -889,33 +890,46 @@ def build_server(*, require_auth: bool) -> FastMCP:
         force_orphan: bool = False,
         force_superseded: bool = False,
         allow_curated: bool = False,
+        expected_dead_inbound: list[str] | None = None,
     ) -> dict:
-        """Tier 2: remove a file. Requires explicit confirm + link safety.
+        """Tier 2: trash a file. Reversible — file moves to _trash/, not /dev/null.
 
-        Per SKILL.md rule 6, supersession via `replace` is the preferred path
-        for compiled material — use this op only when a file truly should not
-        exist (e.g. scratch, mistakes outside the typed-note set).
+        Deletes are NEVER permanent at this layer. The file moves to
+        `Knowledge Base/_trash/YYYY-MM-DD/HHMMSS-<sanitized-original-path>.md`
+        with a `.meta.json` sidecar capturing original path, timestamp,
+        inbound link count, and which force-flags were used. Recovery is
+        `move_file` from the trash path back. Permanent removal happens
+        desk-side via `rm Knowledge Base/_trash/...`.
+
+        Per SKILL.md rule 6, supersession via `replace` is still preferred
+        for compiled material. Use this op for scratch, mistakes outside the
+        typed-note set, and cleanup of files that genuinely shouldn't exist.
 
         Refuses:
         - Sources/, Evidence/ (append-only).
+        - Files already in `_trash/` (already trashed — recover via move_file).
         - Curated trees unless `allow_curated=true`.
         - When `confirm=false`.
         - When `superseded_by:` is set (history) unless `force_superseded=true`.
-        - When inbound wikilinks exist unless `force_orphan=true`.
+        - When inbound wikilinks exist (after `expected_dead_inbound` filtering)
+          unless `force_orphan=true`.
 
         Args:
             path: Vault-relative.
-            confirm: Must be `true` explicitly. Acknowledges permanence.
-            force_orphan: Allow delete even if inbound wikilinks exist
-                (would create broken links — run `audit` after).
-            force_superseded: Allow delete of a file in the supersession
-                chain (history).
-            allow_curated: Required to delete under a curated tree.
+            confirm: Must be `true` explicitly. Marks the action deliberate.
+            force_orphan: Allow trash even if inbound wikilinks exist.
+            force_superseded: Allow trash of a file in the supersession chain.
+            allow_curated: Required to trash under a curated tree.
+            expected_dead_inbound: Vault-relative paths whose inbound links
+                to this file should be ignored. Use when you're trashing
+                multiple files in one workflow (e.g. cleaning a supersession
+                chain) and don't want each step to false-positive on
+                links that will die in the same batch.
 
-        Returns: {path, inbound_link_count, warnings}.
-        Errors: UNCONFIRMED; INVALID_PATH; NOT_FOUND; APPEND_ONLY;
-                CURATED_PROTECTED; SUPERSEDED_HISTORY; INBOUND_LINKS;
-                DELETE_FAILED.
+        Returns: {path, trash_path, inbound_link_count, inbound_ignored_count, warnings}.
+        Errors: UNCONFIRMED; INVALID_PATH; NOT_FOUND; ALREADY_TRASHED;
+                APPEND_ONLY; CURATED_PROTECTED; SUPERSEDED_HISTORY;
+                INBOUND_LINKS; TRASH_FAILED.
         """
         try:
             result = delete_file_module.delete_file(
@@ -925,8 +939,60 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 force_orphan=force_orphan,
                 force_superseded=force_superseded,
                 allow_curated=allow_curated,
+                expected_dead_inbound=expected_dead_inbound,
             )
         except delete_file_module.DeleteFileError as e:
+            raise ValueError(f"{e.code}: {e.reason}") from e
+        return result.as_dict()
+
+    @mcp.tool
+    def delete_directory(
+        path: str,
+        confirm: bool,
+        recursive: bool = False,
+        force_orphan: bool = False,
+        allow_curated: bool = False,
+    ) -> dict:
+        """Tier 2: trash a folder (whole tree). Reversible via _trash/.
+
+        Symmetric with `create_directory`. Like `delete_file`, this NEVER
+        does a permanent delete — the folder is moved to
+        `Knowledge Base/_trash/YYYY-MM-DD/HHMMSS-<sanitized-original-path>/`
+        with a `.meta.json` sidecar.
+
+        Refuses:
+        - Sources/, Evidence/ (append-only at any granularity).
+        - The `_trash/` subtree (it's already trashed).
+        - Curated trees unless `allow_curated=true`.
+        - When `confirm=false`.
+        - Non-empty directories unless `recursive=true`.
+        - When .md files in the tree have EXTERNAL inbound wikilinks
+          (i.e. from outside the doomed tree) unless `force_orphan=true`.
+
+        Args:
+            path: Vault-relative folder.
+            confirm: Must be `true` explicitly.
+            recursive: Required for non-empty directories. Acknowledges
+                you know it has contents.
+            force_orphan: Allow trash even if external inbound wikilinks
+                point into the tree.
+            allow_curated: Required under curated trees.
+
+        Returns: {path, trash_path, file_count, inbound_link_count, warnings}.
+        Errors: UNCONFIRMED; INVALID_PATH; NOT_FOUND; NOT_A_DIR;
+                ALREADY_TRASHED; APPEND_ONLY; CURATED_PROTECTED; NOT_EMPTY;
+                INBOUND_LINKS; TRASH_FAILED.
+        """
+        try:
+            result = delete_directory_module.delete_directory(
+                vault_root,
+                path=path,
+                confirm=confirm,
+                recursive=recursive,
+                force_orphan=force_orphan,
+                allow_curated=allow_curated,
+            )
+        except delete_directory_module.DeleteDirectoryError as e:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
