@@ -39,9 +39,16 @@ files outside the typed-note set, or surgical edits.
   the `type:` frontmatter field for `.md` entries. Read-only.
 - `move_file` — rename/relocate. Rewrites inbound wikilinks by default
   (`[[old]]`, `[[old.md]]`, and `[[basename]]` when unique vault-wide).
-- `delete_file` — remove a file. Requires `confirm=true`; refuses on
-  inbound links unless `force_orphan=true`; refuses on superseded chain
-  unless `force_superseded=true`. Append-only and curated guards still apply.
+- `delete_file` — **trash** a file. Moves to `Knowledge Base/_trash/YYYY-MM-DD/`
+  with a `.meta.json` sidecar; never permanent. Recovery is `move_file`
+  back. Requires `confirm=true`; refuses on inbound links unless
+  `force_orphan=true`; refuses on superseded chain unless
+  `force_superseded=true`. `expected_dead_inbound: list[str]` lets you
+  name files whose links should be ignored (for supersession-chain
+  cleanup workflows). Append-only and curated guards still apply.
+- `delete_directory` — **trash** a folder (whole tree). Same `_trash/`
+  semantics. Requires `confirm=true`; non-empty dirs need
+  `recursive=true`; external inbound links require `force_orphan=true`.
 - `append_to_file` — append text. Refuses on Sources/.
 - `get_frontmatter` — read just the frontmatter (no body). Read-only.
 - `set_frontmatter_field` — patch one frontmatter field; always bumps
@@ -53,8 +60,19 @@ files outside the typed-note set, or surgical edits.
 append-only (no Tier 2 op writes there); curated trees (`Cognitive Core/`,
 `Domains/`, `Prompt Bank/`, `Products/`, `Personal Context/`,
 `Systems Thinking/`) refuse Tier 2 writes by default — pass
-`allow_curated=true` as a deliberate per-call acknowledgement; every
-write logs to `Knowledge Base/log.md`.
+`allow_curated=true` as a deliberate per-call acknowledgement; deletes
+are never permanent (`delete_file` / `delete_directory` move to
+`Knowledge Base/_trash/YYYY-MM-DD/`, recoverable via `move_file`);
+every write logs to `Knowledge Base/log.md`.
+
+**Two-layer traceability:**
+- `Knowledge Base/log.md` — durable content history. Writes only.
+  KB-scoped. The "what happened to the vault" record. Never
+  auto-purged.
+- `logs/kb-mcp.log` — service log. Every call (reads + writes) is
+  surfaced via a per-call middleware as `tool=<name> duration_ms=<n>
+  event=tool_success|tool_error`. Operational layer (debug "did the
+  call reach the server", spot slow ops, etc.). Rotated by NSSM.
 
 Deferred to desk-side: `schema` (KB governance — intentionally non-parity).
 

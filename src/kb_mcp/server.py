@@ -28,6 +28,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier
+from fastmcp.server.middleware.middleware import Middleware, MiddlewareContext
 
 from . import add as add_module
 from . import append_to_file as append_to_file_module
@@ -53,6 +54,65 @@ from .vault import resolve_vault
 
 
 log = logging.getLogger(__name__)
+_call_log = logging.getLogger("kb_mcp.calls")
+
+
+class CallTraceMiddleware(Middleware):
+    """Per-call traceability: log every tool invocation with name + duration.
+
+    Service-log only (`logs/kb-mcp.log`). The durable content history lives
+    in `Knowledge Base/log.md` (writes only, KB-scoped) — this layer is
+    operational: which tool was called, when, by whom, did it succeed.
+    Reads land here too, by design, so we can answer "did the connector
+    actually invoke X?" without polluting log.md.
+
+    Payloads (args + results) deliberately NOT logged — they can be large
+    (`add(content=...)` is unbounded). Tool name + duration + outcome is
+    what's useful for traceability; deeper inspection goes through the
+    audit + the log.md content history.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        import time
+        tool_name = _extract_tool_name(context.message)
+        _call_log.info(f"event=tool_start tool={tool_name}")
+        t0 = time.perf_counter()
+        try:
+            result = await call_next(context)
+            dur = round((time.perf_counter() - t0) * 1000, 2)
+            _call_log.info(
+                f"event=tool_success tool={tool_name} duration_ms={dur}"
+            )
+            return result
+        except Exception as e:
+            dur = round((time.perf_counter() - t0) * 1000, 2)
+            # `e` may include full tracebacks if rendered as str; trim to keep
+            # the call-log line readable. Full tracebacks land in service.err.log.
+            err = type(e).__name__
+            _call_log.error(
+                f"event=tool_error tool={tool_name} duration_ms={dur} err={err}"
+            )
+            raise
+
+
+def _extract_tool_name(message) -> str:
+    """Pull the tool name out of a tools/call request payload, defensively."""
+    # FastMCP's MiddlewareContext.message for tool calls carries the request
+    # body; the actual shape varies by version. Try common access patterns
+    # and fall back to "?" so logging never raises.
+    for accessor in (
+        lambda m: m.params.name,
+        lambda m: m.name,
+        lambda m: m["params"]["name"],
+        lambda m: m["name"],
+    ):
+        try:
+            v = accessor(message)
+            if v:
+                return str(v)
+        except (AttributeError, KeyError, TypeError):
+            continue
+    return "?"
 
 
 def _server_icons() -> list[mcp.types.Icon]:
@@ -135,6 +195,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         )
 
     mcp = FastMCP("kb-mcp", auth=auth, icons=_server_icons())
+    mcp.add_middleware(CallTraceMiddleware())
 
     @mcp.tool
     def find(
