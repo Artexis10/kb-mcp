@@ -206,8 +206,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
         projects: list[str] | None = None,
         tags: list[str] | None = None,
         limit: int = 15,
+        scope: str = "kb",
     ) -> list[dict]:
-        """Search the Knowledge Base. Filters are AND'd; tag/project lists are OR'd within.
+        """Search the vault. Filters are AND'd; tag/project lists are OR'd within.
 
         Args:
             query: Case-insensitive. Tokenized on whitespace; every token must
@@ -218,6 +219,15 @@ def build_server(*, require_auth: bool) -> FastMCP:
             projects: Filter to pages whose `project` or `projects:` includes any of these keys.
             tags: Filter to pages whose `tags:` includes any of these (case-insensitive).
             limit: Max hits to return. Default 15, hard cap 100.
+            scope: "kb" (default) searches only Knowledge Base/. "vault"
+                walks the whole vault including curated trees
+                (Cognitive Core/, Domains/, Prompt Bank/, Products/,
+                Personal Context/, Systems Thinking/). Use "vault" when
+                you need to discover content outside the KB —
+                free-text queries work the same; structured filters
+                won't match curated pages that lack those frontmatter
+                fields. `_Schema/`, `_trash/`, `_attachments/`, and
+                `.obsidian/` are excluded either way.
 
         Returns:
             List of {path, type, scope, title, updated, excerpt}.
@@ -229,6 +239,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             projects=projects,
             tags=tags,
             limit=limit,
+            scope=scope,
         )
         return [h.as_dict() for h in hits]
 
@@ -482,7 +493,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         new_body: str | None = None,
         tags: list[str] | None = None,
     ) -> dict:
-        """Lightweight in-place edit of a compiled page.
+        """Lightweight in-place edit of a page (body and/or tags).
 
         For tweaks — typo fixes, sentence additions, tag corrections —
         without going through full supersession via `replace`. Use `replace`
@@ -498,9 +509,14 @@ def build_server(*, require_auth: bool) -> FastMCP:
         - All other frontmatter fields (type, project, status, sources,
           superseded_by, etc.). If you need to change those, use `replace`.
 
+        No type allowlist: any frontmatter-bearing page outside Sources/
+        Evidence is editable, regardless of `type:`. Works on novel page
+        types (`identity`, future types) without code changes.
+
         Refuses:
         - Sources/ and Evidence/ paths (rule 2: append-only). Add a
           corrective source or compile a downstream note instead.
+        - Pages without a frontmatter block (won't synthesize one).
         - Pages already marked `status: superseded` (don't edit history;
           supersede the active page instead).
 
@@ -571,9 +587,11 @@ def build_server(*, require_auth: bool) -> FastMCP:
         readers follow the chain — inbound wikilinks are NOT retargeted
         (per SKILL.md rule 6).
 
-        Use this for substantial rewrites of an existing compiled page —
-        not minor tweaks (the desk-side flow handles those better since you
-        see a live diff). Cannot supersede sources or evidence (append-only).
+        Use this for substantial rewrites of an existing page — not minor
+        tweaks (the desk-side flow handles those better since you see a
+        live diff). Cannot supersede sources or evidence (append-only).
+        No type allowlist beyond the append-only guard: novel page types
+        (`identity`, future types) can be superseded without code changes.
 
         Args:
             old_path: Vault-relative path of the page being superseded.

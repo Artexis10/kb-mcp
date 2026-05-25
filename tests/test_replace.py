@@ -167,6 +167,43 @@ def test_replace_does_not_retarget_inbound_wikilinks(vault: Path) -> None:
     assert f"[[{old_no_ext}]]" in referrer_text
 
 
+def test_replace_accepts_novel_type(vault: Path) -> None:
+    """Regression: replace used to refuse any type not in a hardcoded set.
+
+    A page with `type: identity` (or any novel type) outside Sources/Evidence
+    should be supersedable. The new page is still constructed via note() so
+    it lands in the standard typed folder routing; the only thing the
+    type-allowlist removal changes is whether the OLD page can be the
+    target of the supersession.
+    """
+    rel = "Knowledge Base/Identity/Products.md"
+    p = vault / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "---\ntype: identity\nscope: products\ncreated: 2026-05-24\nupdated: 2026-05-24\ntags: []\n---\n"
+        "# Products\n\nold facts.\n",
+        encoding="utf-8",
+    )
+    result = replace_module.replace(
+        vault,
+        old_path=rel,
+        content="# Products v2\n\nupdated facts.\n",
+        note_type="insight",  # new page goes to Notes/Insights/
+        title="Identity Products v2",
+        today=TODAY,
+    )
+    # Old page flipped to superseded
+    old_fm = _fm(vault / rel)
+    assert old_fm["status"] == "superseded"
+    assert any(
+        result.new_path.removesuffix(".md") in str(s)
+        for s in old_fm["superseded_by"]
+    )
+    # New page exists with supersedes pointer
+    new_fm = _fm(vault / result.new_path)
+    assert rel.removesuffix(".md") in str(new_fm["supersedes"])
+
+
 def test_replace_propagates_new_note_validation_errors(vault: Path) -> None:
     """If the new-page args are invalid, the supersession is aborted."""
     old_rel = _make_insight(vault, "Validation Source")
