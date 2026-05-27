@@ -35,6 +35,7 @@ from starlette.responses import JSONResponse
 from . import add as add_module
 from . import append_to_file as append_to_file_module
 from . import audit as audit_module
+from . import audit_fix as audit_fix_module
 from . import create_directory as create_directory_module
 from . import create_file as create_file_module
 from . import delete_directory as delete_directory_module
@@ -479,6 +480,53 @@ def build_server(*, require_auth: bool) -> FastMCP:
              summary: {category: count}}.
         """
         report = audit_module.audit(vault_root, categories=categories)
+        return report.as_dict()
+
+    @mcp.tool
+    def audit_fix(dry_run: bool = False) -> dict:
+        """Run audit + auto-apply safe fixes; propose-only for risky categories.
+
+        Closes the lint-finds-but-doesn't-fix loop. Safe categories get
+        rewritten in-place via atomic batch writes; risky categories
+        surface in `proposed` for human/LLM review.
+
+        Safe categories (auto-applied):
+        - Canonical wikilink form across all compiled material (body +
+          frontmatter). Skips Sources/ and Evidence/ (append-only).
+        - Frontmatter required-field backfill with safe defaults:
+          - production-log missing created/updated → use started/shipped/today
+          - research-note/insight/failure/pattern missing status → "active"
+          - research-note/insight/failure/pattern missing updated →
+            use created, else today
+          - experiment missing duration → computed from started+concluded
+          - source missing captured → use created (if present)
+        - Pattern with singular `project:` → plural `projects: [<value>]`
+          (auto-merged into existing projects: list if present).
+        - Sub-folder index refresh + top-index count refresh.
+
+        Risky categories (propose-only, surfaced in `proposed` list):
+        - broken_wikilink residuals after canonicalization (forward refs,
+          missing files, audit limitations).
+        - orphan_entity (deletion is too big to auto-apply).
+        - unprocessed_source (compilation is a thinking task).
+        - tag_inconsistency (renames can break user mental models).
+        - frontmatter_compliance: tenant: misuse (might be intentional).
+        - source missing source_type (folder→type inference is brittle).
+
+        Idempotent: running twice on a clean vault produces no changes.
+
+        Args:
+            dry_run: If true, compute what would change without writing.
+                Default false.
+
+        Returns:
+            {fixed: [{category, path, detail, action}, ...],
+             proposed: [<audit findings>],
+             files_rewritten: int,
+             summary: {fixed: N, proposed: N, fixed_<category>: N, ...},
+             dry_run: bool}
+        """
+        report = audit_fix_module.audit_fix(vault_root, dry_run=dry_run)
         return report.as_dict()
 
     @mcp.tool
