@@ -211,7 +211,10 @@ def test_link_connections_normalize_and_render(vault: Path) -> None:
         today=TODAY,
     )
     text = _read(vault / result.path)
-    # Each connection rendered as a bullet
+    # Each connection rendered as a bullet.
+    # KB-relative inputs get promoted to full vault-rooted form. Curated-tree
+    # references (`Cognitive Core/...`) stay vault-relative — they don't
+    # live under Knowledge Base/.
     assert "- [[Knowledge Base/Notes/Insights/foo]]" in text
     assert "- [[Knowledge Base/Notes/Patterns/bar]]" in text
-    assert "- [[Knowledge Base/Cognitive Core/Strategy]]" in text
+    assert "- [[Cognitive Core/Strategy]]" in text

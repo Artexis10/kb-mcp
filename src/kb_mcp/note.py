@@ -35,10 +35,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import indexes
+from . import project_keys as project_keys_module
 from .vault import (
     PlannedWrite,
+    WikilinkResolver,
     batch_atomic_write,
     kb_root,
+    normalize_body_wikilinks,
+    normalize_wikilink,
     slugify_with_truncation_check,
     unique_path,
 )
@@ -52,6 +56,12 @@ NOTE_TYPES = (
     "experiment", "production-log",
 )
 
+# NOTE: PROJECT_KEYS and PROJECT_TO_FOLDER are now loaded from
+# `Knowledge Base/_Schema/project-keys.yaml` at validation time. The module-
+# level constants below are kept as references for tests/back-compat but are
+# NOT consulted by the live writer — use `_load_keys(vault_root)` instead.
+# To add a new project: edit project-keys.yaml in the vault, no code change
+# needed. See kb_mcp/project_keys.py for the loader.
 PROJECT_KEYS = (
     "substrate", "q", "endstate", "sift", "tu", "book-club",
     "health", "finance", "creative", "science", "travel", "personal",
@@ -71,6 +81,11 @@ PROJECT_TO_FOLDER: dict[str, str] = {
     "travel": "Travel",
     "personal": "Personal",
 }
+
+
+def _load_keys(vault_root: Path) -> project_keys_module.ProjectRegistry:
+    """Load the live project registry (from `_Schema/project-keys.yaml`)."""
+    return project_keys_module.load_project_registry(vault_root)
 
 SEVERITY_VALUES = ("minor", "moderate", "serious", "critical")
 
@@ -148,6 +163,37 @@ def note(
         else:
             status = "active"
 
+    # Auto-register unknown project keys BEFORE validation. Hugo runs through
+    # LLMs almost exclusively and shouldn't have to edit
+    # `_Schema/project-keys.yaml` by hand. If `project` (or any item in
+    # `projects`) is a valid slug but not yet registered, we add it to the
+    # registry + create the matching folder, then surface a warning so the
+    # registration is visible. Invalid slugs fall through to validation
+    # which rejects them with a typed error.
+    autoregister_warnings: list[str] = []
+    candidates: list[str] = []
+    if project:
+        candidates.append(project)
+    if projects:
+        candidates.extend(p for p in projects if p)
+    if candidates:
+        registry = _load_keys(vault_root)
+        for cand in candidates:
+            if cand in registry.project_to_folder:
+                continue
+            try:
+                _, new_folder, was_new = project_keys_module.register_project_key(
+                    vault_root, cand
+                )
+                if was_new:
+                    autoregister_warnings.append(
+                        f"Auto-registered project key {cand!r} (folder: "
+                        f"{new_folder!r})."
+                    )
+            except ValueError:
+                # Invalid slug — fall through to validation which will reject.
+                pass
+
     err = _validate(
         note_type=note_type,
         content=content,
@@ -161,6 +207,7 @@ def note(
         started=started,
         duration=duration,
         medium=medium,
+        vault_root=vault_root,
     )
     if err is not None:
         raise NoteError(code=err.code, missing=err.missing, reason=err.reason)
@@ -168,7 +215,6 @@ def note(
     today = today or dt.date.today()
     date_iso = today.isoformat()
     tags_clean = _clean_tags(tags)
-    sources_norm = _normalize_sources(sources)
 
     note_path, slug_warning = _resolve_path(
         vault_root=vault_root,
@@ -183,6 +229,23 @@ def note(
     rel_note_no_ext = note_path.relative_to(vault_root).with_suffix("").as_posix()
     new_note_wikilink = f"[[{rel_note_no_ext}]]"
 
+    # Resolver: built once per write so every wikilink lookup hits the same
+    # in-memory index. We register the new note's own path so any body
+    # reference back to itself resolves cleanly.
+    resolver = WikilinkResolver(vault_root)
+    resolver.add_pending(rel_note_no_ext, title=title)
+
+    sources_norm, source_warnings = _normalize_sources(
+        sources, vault_root=vault_root, resolver=resolver
+    )
+
+    # Normalize wikilinks inside the body to canonical full form, skipping
+    # code blocks. Unresolvable links pass through with a warning so forward
+    # refs are still permitted.
+    body_clean, body_warnings = normalize_body_wikilinks(
+        content, vault_root, resolver=resolver
+    )
+
     note_md = _render_note(
         note_type=note_type,
         title=title,
@@ -192,7 +255,7 @@ def note(
         date_iso=date_iso,
         sources=sources_norm,
         tags=tags_clean,
-        content=content,
+        content=body_clean,
         severity=severity,
         pattern_type=pattern_type,
         domain=domain,
@@ -210,7 +273,7 @@ def note(
 
     kb = kb_root(vault_root)
     writes: list[PlannedWrite] = [PlannedWrite(path=note_path, content=note_md)]
-    warnings: list[str] = []
+    warnings: list[str] = list(autoregister_warnings) + list(source_warnings) + list(body_warnings)
     if slug_warning:
         warnings.append(slug_warning)
 
@@ -268,9 +331,20 @@ def note(
             date_iso=date_iso,
             summary=activity_summary,
         )
+        # Refresh sub-folder indexes + the top-index Counts rows for Notes/
+        # Entities. Pass the new note's path so counts reflect post-write
+        # state without a second disk scan.
+        sub_writes, new_top_with_counts = indexes.compute_subindex_writes(
+            vault_root,
+            top_index_text=new_top,
+            pending_paths=[rel_note_no_ext],
+        )
+        if new_top_with_counts is not None:
+            new_top = new_top_with_counts
         # trim_note still flows into the log entry body below — log.md is the
         # paper trail for cap-50 displacement (SKILL.md trim discipline).
         writes.append(PlannedWrite(path=top_index, content=new_top))
+        writes.extend(sub_writes)
     else:
         warnings.append("Knowledge Base/index.md missing; skipped Recent activity bump")
 
@@ -288,10 +362,6 @@ def note(
         writes.append(PlannedWrite(path=log_file, content=new_log))
     else:
         warnings.append("Knowledge Base/log.md missing; skipped log entry")
-
-    warnings.append(
-        "Counts in index.md not auto-updated for notes; reconcile via desk audit."
-    )
 
     try:
         batch_atomic_write(writes)
@@ -333,6 +403,7 @@ def _validate(
     started: str | None,
     duration: str | None,
     medium: str | None,
+    vault_root: Path,
 ) -> _Err | None:
     missing: list[str] = []
     reasons: list[str] = []
@@ -379,16 +450,21 @@ def _validate(
             missing.append("status")
             reasons.append(f"status must be 'active' or 'draft', got {status!r}")
 
+    registry = _load_keys(vault_root)
+    valid_keys = registry.project_to_folder
     if note_type == "research-note":
         if not project:
             missing.append("project")
             reasons.append("project is required for research-note")
-        elif project not in PROJECT_KEYS:
+        elif project not in valid_keys:
+            # Reaching here means auto-register failed (invalid slug shape).
             return _Err(
                 code="INVALID_NOTE",
                 missing=["project"],
                 reason=(
-                    f"project {project!r} is not a valid key. Valid: {list(PROJECT_KEYS)}"
+                    f"project {project!r} is not a valid slug "
+                    f"(must be lowercase letters/digits/dashes). "
+                    f"Existing keys: {sorted(valid_keys)}"
                 ),
             )
         if projects:
@@ -403,14 +479,15 @@ def _validate(
                 "the `project` arg was ignored"
             )
         if projects:
-            invalid = [p for p in projects if p not in PROJECT_KEYS]
+            invalid = [p for p in projects if p not in valid_keys]
             if invalid:
                 return _Err(
                     code="INVALID_NOTE",
                     missing=["projects"],
                     reason=(
-                        f"projects contains unknown keys {invalid}. "
-                        f"Valid: {list(PROJECT_KEYS)}"
+                        f"projects contains keys that aren't valid slugs "
+                        f"and couldn't be auto-registered: {invalid}. "
+                        f"Existing keys: {sorted(valid_keys)}"
                     ),
                 )
         if note_type == "failure" and severity is not None and severity not in SEVERITY_VALUES:
@@ -480,7 +557,10 @@ def _resolve_path(
     slug, slug_warning = slugify_with_truncation_check(title)
     if note_type == "research-note":
         assert project is not None  # validated above
-        folder = kb / "Notes" / "Research" / PROJECT_TO_FOLDER[project]
+        # Use live registry so auto-registered keys resolve to their folder.
+        registry = _load_keys(vault_root)
+        folder_name = registry.folder_for(project) or PROJECT_TO_FOLDER.get(project, project.capitalize())
+        folder = kb / "Notes" / "Research" / folder_name
         stem = slug
     elif note_type == "insight":
         folder = kb / "Notes" / "Insights"
@@ -675,26 +755,38 @@ def _append_to_ingested_into(text: str, new_wikilink: str) -> str:
 # ---------------- sources normalization & resolution ----------------
 
 
-def _normalize_sources(sources: list[str] | None) -> list[str]:
-    """Strip `[[...]]` wrappers and leading `Knowledge Base/`, drop empties/dupes."""
+def _normalize_sources(
+    sources: list[str] | None,
+    *,
+    vault_root: Path,
+    resolver: WikilinkResolver,
+) -> tuple[list[str], list[str]]:
+    """Canonicalize each source wikilink to full vault-rooted form.
+
+    Returns (canonical_sources, warnings). Resolvable inputs become
+    `Knowledge Base/<path>` (no `.md`). Unresolvable inputs are kept in the
+    caller-supplied form (with `Knowledge Base/` prepended if missing) and
+    surfaced as a warning — sources are sometimes added before the source
+    file lands (e.g. compile-then-capture order), so we don't refuse.
+    """
     if not sources:
-        return []
+        return [], []
     out: list[str] = []
     seen: set[str] = set()
+    warnings: list[str] = []
     for s in sources:
         s = (s or "").strip()
         if not s:
             continue
-        if s.startswith("[[") and s.endswith("]]"):
-            s = s[2:-2]
-        s = s.strip()
-        # Always store as "Knowledge Base/..." form for the back-ref wikilink.
-        if not s.startswith("Knowledge Base/"):
-            s = "Knowledge Base/" + s.lstrip("/")
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+        canonical, warning = normalize_wikilink(
+            s, vault_root, resolver=resolver, strict=False
+        )
+        if warning:
+            warnings.append(warning)
+        if canonical not in seen:
+            seen.add(canonical)
+            out.append(canonical)
+    return out, warnings
 
 
 def _resolve_source_path(vault_root: Path, kb_relative: str) -> Path | None:

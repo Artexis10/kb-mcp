@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .vault import kb_root
+from .vault import PlannedWrite, kb_root
 
 
 RECENT_ACTIVITY_CAP = 50
@@ -278,6 +278,75 @@ def _prepend_recent_activity(
 
 
 SOURCES_COUNT_PATTERN = re.compile(r"^- Sources: .+$", re.MULTILINE)
+# Top-index Counts rows: `- Notes (research): 106` or `- Entities (person): 21`.
+_NOTES_COUNT_LINE = re.compile(
+    r"^(- Notes \()([a-z-]+)(\): )(\d+)\s*$", re.MULTILINE
+)
+_ENTITIES_COUNT_LINE = re.compile(
+    r"^(- Entities \()([a-z-]+)(\): )(\d+)\s*$", re.MULTILINE
+)
+
+
+# Map Entities/<folder> → entity_type key used in the Counts section.
+_ENTITIES_FOLDER_TO_TYPE: dict[str, str] = {
+    "People": "person",
+    "Concepts": "concept",
+    "Libraries": "library",
+    "Decisions": "decision",
+}
+
+
+def _count_entities(entities_dir: Path) -> dict[str, int]:
+    """Per-entity-type count, mirrors `_count_sources` shape.
+
+    Returns a dict keyed by entity_type token (person, concept, library,
+    decision). Excludes index.md and `_*` folders.
+    """
+    out: dict[str, int] = {}
+    if not entities_dir.is_dir():
+        return out
+    for sub in entities_dir.iterdir():
+        if not sub.is_dir() or sub.name.startswith("_"):
+            continue
+        key = _ENTITIES_FOLDER_TO_TYPE.get(sub.name)
+        if key is None:
+            continue
+        out[key] = sum(
+            1 for f in sub.iterdir()
+            if f.is_file() and f.suffix == ".md" and f.name != "index.md"
+        )
+    return out
+
+
+def _rewrite_top_index_notes_and_entities_counts(
+    text: str,
+    *,
+    notes_counts: dict[str, int],
+    entities_counts: dict[str, int],
+) -> str:
+    """Rewrite `- Notes (<type>): N` and `- Entities (<type>): N` lines in place.
+
+    Only updates lines already present — doesn't auto-add new rows. New
+    note-types or entity-types appearing on disk surface via audit's
+    index_drift check, where Hugo can decide whether to add the row.
+    """
+    def _replace_notes(m: re.Match[str]) -> str:
+        type_key = m.group(2)
+        actual = notes_counts.get(type_key)
+        if actual is None:
+            return m.group(0)  # unknown type; leave alone
+        return f"{m.group(1)}{type_key}{m.group(3)}{actual}"
+
+    def _replace_entities(m: re.Match[str]) -> str:
+        type_key = m.group(2)
+        actual = entities_counts.get(type_key)
+        if actual is None:
+            return m.group(0)
+        return f"{m.group(1)}{type_key}{m.group(3)}{actual}"
+
+    text = _NOTES_COUNT_LINE.sub(_replace_notes, text)
+    text = _ENTITIES_COUNT_LINE.sub(_replace_entities, text)
+    return text
 
 
 def _rewrite_sources_count(text: str, *, counts: dict[str, int]) -> str:
@@ -301,6 +370,270 @@ def _rewrite_sources_count(text: str, *, counts: dict[str, int]) -> str:
         return text
     body_start += 2
     return text[:body_start] + new_line + "\n" + text[body_start:]
+
+
+# ---------------- sub-folder index refresh ----------------
+
+
+# Per page-type subfolders that show up in Notes/index.md and we keep
+# count-current. Order matches the existing real-vault index layout.
+_NOTES_SUBINDEX_TYPES: tuple[tuple[str, str], ...] = (
+    # (page-type token, folder name on disk)
+    ("research", "Research"),
+    ("insight", "Insights"),
+    ("failure", "Failures"),
+    ("pattern", "Patterns"),
+    ("experiment", "Experiments"),
+    ("production-log", "Productions"),
+)
+
+
+# H3 header `### Research — project-or-domain-scoped synthesis (43)` — capture
+# the type name (group 1), the description (group 2), and the count (group 3).
+_NOTES_H3_COUNT = re.compile(
+    r"^(### (?P<name>[A-Z][\w\- ]*?))( — [^\n]*?)? \((?P<count>\d+)\)\s*$",
+    re.MULTILINE,
+)
+
+# Subfolder bullet in Notes/index.md:
+# `- [[Knowledge Base/Notes/Research/Substrate/|Substrate]] (2) — desc`
+_NOTES_SUBFOLDER_BULLET = re.compile(
+    r"^(- \[\[Knowledge Base/Notes/(?P<typef>[A-Za-z]+)/(?P<sub>[^|\]/]+)/?(?:\|[^\]]+)?\]\])"
+    r"( \((?P<count>\d+)\))?(?P<rest>(?:\s+—[^\n]*)?)\s*$",
+    re.MULTILINE,
+)
+
+# Entities/index.md top-level bullet:
+# `- [[Knowledge Base/Entities/People/|People]] (12)` (optional description)
+_ENTITIES_BULLET = re.compile(
+    r"^(- \[\[Knowledge Base/Entities/(?P<folder>People|Concepts|Libraries|Decisions)/?(?:\|[^\]]+)?\]\])"
+    r"( \((?P<count>\d+)\))?(?P<rest>(?:\s+—[^\n]*)?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _count_notes_by_subfolder(notes_dir: Path) -> dict[str, dict[str, int]]:
+    """Return nested counts: `{type_folder: {subfolder: count}}`.
+
+    For `Research`, `Experiments`, `Productions` (the nested types), the inner
+    dict has per-subfolder counts (`Q`, `Endstate`, `Health`, ...). For
+    flat types (`Insights`, `Failures`, `Patterns`), the inner dict has a
+    single `''` key with the total.
+    """
+    out: dict[str, dict[str, int]] = {}
+    if not notes_dir.is_dir():
+        return out
+    for type_folder in notes_dir.iterdir():
+        if not type_folder.is_dir() or type_folder.name.startswith("_"):
+            continue
+        inner: dict[str, int] = {}
+        # Detect whether this type folder has subfolders or is flat.
+        has_subfolders = any(
+            child.is_dir() and not child.name.startswith("_")
+            for child in type_folder.iterdir()
+        )
+        if has_subfolders:
+            for sub in type_folder.iterdir():
+                if not sub.is_dir() or sub.name.startswith("_"):
+                    continue
+                count = sum(
+                    1 for p in sub.rglob("*.md") if p.name != "index.md"
+                )
+                inner[sub.name] = count
+            # Also count top-level .md files (not under any subfolder)
+            top_level = sum(
+                1 for p in type_folder.glob("*.md") if p.name != "index.md"
+            )
+            if top_level:
+                inner[""] = top_level
+        else:
+            count = sum(
+                1 for p in type_folder.rglob("*.md") if p.name != "index.md"
+            )
+            inner[""] = count
+        out[type_folder.name] = inner
+    return out
+
+
+def _refresh_notes_subindex_text(
+    text: str,
+    *,
+    counts_by_type: dict[str, int],
+    counts_by_subfolder: dict[str, dict[str, int]],
+) -> str:
+    """Rewrite count numbers in `Notes/index.md` without touching descriptions.
+
+    Counts are rewritten in two places:
+    - H3 type headers `### Research — desc (43)` → updates `(43)` from `counts_by_type`.
+    - Subfolder bullets `- [[link|Substrate]] (2) — desc` → updates `(2)` from `counts_by_subfolder`.
+
+    Descriptions and section ordering are left untouched. Subfolders that
+    appear on disk but aren't already represented as bullets stay un-added;
+    audit's index_drift check surfaces them so Hugo can add a description.
+    """
+    folder_to_type = {f: t for t, f in _NOTES_SUBINDEX_TYPES}
+
+    def _h3(m: re.Match[str]) -> str:
+        name = m.group("name").strip()
+        type_key = folder_to_type.get(name)
+        if type_key is None:
+            return m.group(0)
+        actual = counts_by_type.get(type_key)
+        if actual is None:
+            return m.group(0)
+        prefix = m.group(1)  # `### Research`
+        desc = m.group(3) or ""  # ` — description`
+        return f"{prefix}{desc} ({actual})"
+
+    def _bullet(m: re.Match[str]) -> str:
+        type_folder = m.group("typef")
+        sub = m.group("sub")
+        rest = m.group("rest") or ""
+        # `Research`-style: sub is the project folder (`Substrate`, `Q`).
+        # For flat types where the bullet might not have a sub, we leave alone.
+        per_type = counts_by_subfolder.get(type_folder, {})
+        actual = per_type.get(sub)
+        if actual is None:
+            return m.group(0)
+        return f"{m.group(1)} ({actual}){rest}"
+
+    text = _NOTES_H3_COUNT.sub(_h3, text)
+    text = _NOTES_SUBFOLDER_BULLET.sub(_bullet, text)
+    return text
+
+
+def _refresh_entities_subindex_text(
+    text: str, *, counts_by_type: dict[str, int]
+) -> str:
+    """Rewrite `- [[Knowledge Base/Entities/<Folder>/...]] (N)` in Entities/index.md."""
+    folder_to_type = {
+        "People": "person",
+        "Concepts": "concept",
+        "Libraries": "library",
+        "Decisions": "decision",
+    }
+
+    def _bullet(m: re.Match[str]) -> str:
+        folder = m.group("folder")
+        type_key = folder_to_type.get(folder)
+        if type_key is None:
+            return m.group(0)
+        actual = counts_by_type.get(type_key)
+        if actual is None:
+            return m.group(0)
+        rest = m.group("rest") or ""
+        return f"{m.group(1)} ({actual}){rest}"
+
+    return _ENTITIES_BULLET.sub(_bullet, text)
+
+
+def compute_subindex_writes(
+    vault_root: Path,
+    *,
+    top_index_text: str | None = None,
+    pending_paths: list[str] | None = None,
+) -> tuple[list[PlannedWrite], str | None]:
+    """Build the planned writes for sub-folder + top-index count refreshes.
+
+    Returns `(writes, top_index_new_text)`. If `top_index_text` is provided,
+    it is used as the base for rewriting top-index counts (so the caller's
+    in-flight changes to Recent activity don't get clobbered); the rewritten
+    text is returned. Otherwise the caller is responsible for re-reading the
+    top index from disk later.
+
+    `pending_paths` are vault-relative KB paths (with or without `.md`) of
+    files the caller is about to write in the same atomic batch. They are
+    virtually counted into the totals so the index reflects post-write state
+    without re-scanning twice. Pass `[]` or omit for ops that don't add
+    counted files (edit, preserve).
+
+    Writes are only included for files that exist. Missing sub-indexes
+    are silently skipped — not every machine maintains the full hierarchy.
+    """
+    kb = kb_root(vault_root)
+    writes: list[PlannedWrite] = []
+
+    notes_dir = kb / "Notes"
+    entities_dir = kb / "Entities"
+
+    notes_counts = _count_notes(notes_dir)
+    entities_counts = _count_entities(entities_dir)
+    notes_by_subfolder = _count_notes_by_subfolder(notes_dir)
+
+    # Virtually count each pending path so the index shows post-write state.
+    for raw_path in pending_paths or []:
+        rel = raw_path.removesuffix(".md").replace("\\", "/")
+        rel = rel.removeprefix("Knowledge Base/").lstrip("/")
+        parts = rel.split("/")
+        if len(parts) < 2:
+            continue
+        head = parts[0]
+        if head == "Notes" and len(parts) >= 3:
+            type_folder = parts[1]
+            type_key = {
+                "Research": "research",
+                "Insights": "insight",
+                "Failures": "failure",
+                "Patterns": "pattern",
+                "Experiments": "experiment",
+                "Productions": "production-log",
+            }.get(type_folder)
+            if type_key:
+                notes_counts[type_key] = notes_counts.get(type_key, 0) + 1
+            # For nested types, also bump the per-subfolder count.
+            if type_folder in ("Research", "Experiments", "Productions") and len(parts) >= 4:
+                sub = parts[2]
+                inner = notes_by_subfolder.setdefault(type_folder, {})
+                inner[sub] = inner.get(sub, 0) + 1
+            elif type_folder in ("Insights", "Failures", "Patterns"):
+                inner = notes_by_subfolder.setdefault(type_folder, {})
+                inner[""] = inner.get("", 0) + 1
+        elif head == "Entities" and len(parts) >= 3:
+            ent_folder = parts[1]
+            ent_key = _ENTITIES_FOLDER_TO_TYPE.get(ent_folder)
+            if ent_key:
+                entities_counts[ent_key] = entities_counts.get(ent_key, 0) + 1
+
+    # Top index counts refresh (Notes + Entities rows).
+    new_top_text: str | None = None
+    if top_index_text is not None:
+        new_top_text = _rewrite_top_index_notes_and_entities_counts(
+            top_index_text,
+            notes_counts=notes_counts,
+            entities_counts=entities_counts,
+        )
+
+    # Notes/index.md refresh.
+    notes_index = notes_dir / "index.md"
+    if notes_index.exists():
+        try:
+            current = notes_index.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current is not None:
+            new = _refresh_notes_subindex_text(
+                current,
+                counts_by_type=notes_counts,
+                counts_by_subfolder=notes_by_subfolder,
+            )
+            if new != current:
+                writes.append(PlannedWrite(path=notes_index, content=new))
+
+    # Entities/index.md refresh.
+    entities_index = entities_dir / "index.md"
+    if entities_index.exists():
+        try:
+            current = entities_index.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current is not None:
+            new = _refresh_entities_subindex_text(
+                current, counts_by_type=entities_counts
+            )
+            if new != current:
+                writes.append(PlannedWrite(path=entities_index, content=new))
+
+    return writes, new_top_text
 
 
 def _update_log(

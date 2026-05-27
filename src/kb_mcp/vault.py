@@ -459,6 +459,298 @@ def find_inbound_wikilinks(
     return matches
 
 
+# ---------------- wikilink normalization ----------------
+
+
+class WikilinkError(Exception):
+    """Base class for wikilink-resolution problems."""
+
+
+class UnresolvedWikilinkError(WikilinkError):
+    """No file in the vault matches the wikilink target."""
+
+
+class AmbiguousWikilinkError(WikilinkError):
+    """A bare-name wikilink matches more than one file."""
+
+
+class WikilinkResolver:
+    """In-memory index of vault paths + frontmatter titles for wikilink resolution.
+
+    Build once per write op; pass to `normalize_wikilink()` and
+    `normalize_body_wikilinks()` for each link. Cuts the walk cost from
+    once-per-link to once-per-op.
+
+    The resolver knows three keying strategies:
+    - `full_paths`: vault-relative POSIX without `.md` (e.g.
+      `Knowledge Base/Entities/Concepts/Profile`).
+    - `kb_stripped`: same with the leading `Knowledge Base/` removed.
+    - `stems`: filename stem (no path) → list of full paths (multi-match if
+      the basename collides across folders).
+    - `titles`: frontmatter `title:` lower-cased → list of full paths. This
+      lets `[[North-Led Content Manual]]` resolve to a source file whose
+      stem is date-prefixed (`2026-05-15-tu-north-led-content-manual`) but
+      whose title matches.
+    """
+
+    def __init__(self, vault_root: Path):
+        self.vault_root = vault_root
+        self.full_paths: set[str] = set()
+        self.kb_stripped: set[str] = set()
+        self.stems: dict[str, list[str]] = {}
+        self.titles: dict[str, list[str]] = {}
+        self._build()
+
+    def _build(self) -> None:
+        vault_resolved = self.vault_root.resolve()
+        for md in walk_vault_md(self.vault_root):
+            try:
+                rel = md.resolve().relative_to(vault_resolved).as_posix()
+            except ValueError:
+                continue
+            no_ext = rel.removesuffix(".md")
+            self.full_paths.add(no_ext)
+            self.kb_stripped.add(no_ext.removeprefix("Knowledge Base/"))
+            self.stems.setdefault(md.stem, []).append(no_ext)
+            try:
+                text = md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            fm, _, _ = parse_frontmatter(text)
+            title = fm.get("title") if isinstance(fm, dict) else None
+            if isinstance(title, str) and title.strip():
+                self.titles.setdefault(title.strip().lower(), []).append(no_ext)
+
+    def add_pending(self, no_ext_path: str, *, title: str | None = None) -> None:
+        """Register a file the writer is about to create.
+
+        Lets a same-batch reference (e.g. the source's back-ref to the new
+        note's path) resolve before the file lands on disk.
+        """
+        no_ext = no_ext_path.removesuffix(".md").lstrip("/")
+        self.full_paths.add(no_ext)
+        self.kb_stripped.add(no_ext.removeprefix("Knowledge Base/"))
+        stem = no_ext.rsplit("/", 1)[-1]
+        self.stems.setdefault(stem, []).append(no_ext)
+        if title and title.strip():
+            self.titles.setdefault(title.strip().lower(), []).append(no_ext)
+
+
+def _strip_wikilink_brackets(s: str) -> str:
+    """Strip `[[ ... ]]` wrappers and the trailing `|alias` if present."""
+    s = s.strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        s = s[2:-2].strip()
+    return s
+
+
+def normalize_wikilink(
+    target: str,
+    vault_root: Path,
+    *,
+    resolver: WikilinkResolver | None = None,
+    strict: bool = False,
+) -> tuple[str, str | None]:
+    """Canonicalize a wikilink target to full vault-rooted form (no `.md`).
+
+    Accepts any input form: bare, KB-relative, full vault-rooted, with or
+    without `.md`, with or without `[[ ]]` wrappers, with or without
+    `|alias`, with optional `#anchor`. The returned form is always
+    `Knowledge Base/<rest>` (or curated tree like `Domains/<rest>`) with
+    `.md` stripped and `#anchor` preserved.
+
+    Returns `(canonical, warning_or_none)`. On unresolvable target:
+    - `strict=True`: raises `UnresolvedWikilinkError` (or
+      `AmbiguousWikilinkError` for bare names with multiple matches).
+    - `strict=False`: returns the cleaned input + a warning string. The
+      caller can choose to surface the warning and leave the link as a
+      forward reference, or to abort.
+    """
+    if resolver is None:
+        resolver = WikilinkResolver(vault_root)
+
+    cleaned = _strip_wikilink_brackets(target)
+    if "|" in cleaned:
+        cleaned = cleaned.split("|", 1)[0].strip()
+    # Preserve #anchor across normalization.
+    anchor = ""
+    if "#" in cleaned:
+        cleaned, anchor_part = cleaned.split("#", 1)
+        anchor = "#" + anchor_part
+        cleaned = cleaned.rstrip()
+    cleaned = cleaned.removesuffix(".md").strip().strip("/")
+    if not cleaned:
+        if strict:
+            raise UnresolvedWikilinkError(f"empty wikilink target: {target!r}")
+        return "", f"empty wikilink target: {target!r}"
+
+    # Folder-hub link (e.g. `[[Knowledge Base/Notes/Patterns/]]`): we never
+    # canonicalize beyond ensuring the Knowledge Base/ prefix.
+    if cleaned.endswith("/"):
+        canonical = (
+            cleaned if cleaned.startswith("Knowledge Base/")
+            else "Knowledge Base/" + cleaned
+        )
+        return canonical + anchor, None
+
+    # 1. Full vault-rooted (with or without explicit Knowledge Base/ prefix).
+    if cleaned in resolver.full_paths:
+        return cleaned + anchor, None
+    if not cleaned.startswith("Knowledge Base/"):
+        candidate = "Knowledge Base/" + cleaned
+        if candidate in resolver.full_paths:
+            return candidate + anchor, None
+
+    # 2. KB-stripped match (target looks like KB-relative).
+    if cleaned in resolver.kb_stripped:
+        return "Knowledge Base/" + cleaned + anchor, None
+
+    # 3. Bare name (no `/`): stem match first, then frontmatter title.
+    if "/" not in cleaned:
+        stem_matches = resolver.stems.get(cleaned)
+        if stem_matches:
+            if len(stem_matches) == 1:
+                return stem_matches[0] + anchor, None
+            if strict:
+                raise AmbiguousWikilinkError(
+                    f"bare wikilink {target!r} resolves to "
+                    f"{len(stem_matches)} files: {stem_matches}"
+                )
+            return cleaned + anchor, (
+                f"bare wikilink {target!r} matches {len(stem_matches)} files "
+                f"by stem; left unchanged. Files: {stem_matches}"
+            )
+        title_matches = resolver.titles.get(cleaned.lower())
+        if title_matches:
+            if len(title_matches) == 1:
+                return title_matches[0] + anchor, None
+            if strict:
+                raise AmbiguousWikilinkError(
+                    f"wikilink {target!r} matches {len(title_matches)} "
+                    f"files by frontmatter title: {title_matches}"
+                )
+            return cleaned + anchor, (
+                f"wikilink {target!r} matches {len(title_matches)} files "
+                f"by title; left unchanged. Files: {title_matches}"
+            )
+
+    # Unresolvable — forward reference or genuinely missing target. Return
+    # a sensible fallback canonical form so callers can use the result
+    # directly without prefix manipulation:
+    # - already starts with `Knowledge Base/` → keep
+    # - already starts with a known curated tree → keep
+    # - has a path separator → promote to `Knowledge Base/<rest>`
+    # - bare name → leave as-is (audit's bare-name lookup will try later)
+    if strict:
+        raise UnresolvedWikilinkError(
+            f"wikilink {target!r} does not resolve to any file in the vault"
+        )
+    if cleaned.startswith("Knowledge Base/"):
+        fallback = cleaned
+    elif "/" in cleaned and cleaned.split("/", 1)[0] in CURATED_TREES:
+        fallback = cleaned
+    elif "/" in cleaned:
+        fallback = "Knowledge Base/" + cleaned
+    else:
+        fallback = cleaned
+    return fallback + anchor, (
+        f"wikilink {target!r} does not resolve to any file in the vault"
+    )
+
+
+def _mask_code_spans(text: str) -> str:
+    """Replace code-block and inline-code regions with spaces, preserving offsets.
+
+    Result is the same length as input; positions of non-code characters are
+    unchanged. Used so wikilink scanners can ignore `[[X]]` inside code while
+    still reporting accurate offsets into the original text.
+    """
+    out = list(text)
+    # Fenced code blocks (``` or ~~~), allowing up to 3 leading spaces per CommonMark.
+    fence_open = re.compile(r"^( {0,3})(`{3,}|~{3,})[^\n]*$", re.MULTILINE)
+    pos = 0
+    while True:
+        m = fence_open.search(text, pos)
+        if not m:
+            break
+        fence = m.group(2)
+        char = fence[0]
+        length = len(fence)
+        close_re = re.compile(
+            rf"^ {{0,3}}{re.escape(char)}{{{length},}}\s*$",
+            re.MULTILINE,
+        )
+        close_m = close_re.search(text, m.end())
+        end = close_m.end() if close_m else len(text)
+        for i in range(m.start(), end):
+            if text[i] != "\n":
+                out[i] = " "
+        pos = end
+    # Inline code: single-line backtick-delimited spans.
+    inline_re = re.compile(r"(`+)([^\n`]+?)\1")
+    masked_str = "".join(out)
+    for m in inline_re.finditer(masked_str):
+        for i in range(m.start(), m.end()):
+            if out[i] != "\n":
+                out[i] = " "
+    return "".join(out)
+
+
+def find_body_wikilinks(text: str) -> list[re.Match[str]]:
+    """Return wikilink matches in `text`, skipping fenced code + inline code."""
+    masked = _mask_code_spans(text)
+    return list(_WIKILINK_PATTERN.finditer(masked))
+
+
+def normalize_body_wikilinks(
+    body: str,
+    vault_root: Path,
+    *,
+    resolver: WikilinkResolver | None = None,
+) -> tuple[str, list[str]]:
+    """Rewrite every `[[X]]` in `body` to canonical full vault-rooted form.
+
+    Preserves `[[X|alias]]` aliases. Skips matches inside fenced code blocks
+    and inline code spans. Returns `(new_body, warnings)`. Unresolvable links
+    are left as-is with a warning — forward references are intentional.
+    """
+    if resolver is None:
+        resolver = WikilinkResolver(vault_root)
+    warnings: list[str] = []
+    matches = find_body_wikilinks(body)
+    new_body = body
+    # Walk back-to-front so earlier rewrites don't shift later positions.
+    # _WIKILINK_PATTERN's group(1) is the target without the alias (the alias
+    # is consumed by a non-capturing branch), so we parse the full match
+    # text to recover the alias.
+    for m in reversed(matches):
+        full = m.group(0)  # '[[target]]' or '[[target|alias]]'
+        inner = full[2:-2]
+        alias: str | None = None
+        if "|" in inner:
+            target_only, alias_part = inner.split("|", 1)
+            target_only = target_only.strip()
+            alias = alias_part.strip() or None
+        else:
+            target_only = inner.strip()
+        canonical, warning = normalize_wikilink(
+            target_only, vault_root, resolver=resolver, strict=False
+        )
+        if warning:
+            warnings.append(warning)
+            continue
+        if canonical == target_only:
+            continue  # already canonical
+        replacement = (
+            f"[[{canonical}|{alias}]]" if alias is not None else f"[[{canonical}]]"
+        )
+        new_body = new_body[: m.start()] + replacement + new_body[m.end():]
+    return new_body, warnings
+
+
+# ---------------- log helpers ----------------
+
+
 def prepend_log_entry(
     log_text: str,
     *,

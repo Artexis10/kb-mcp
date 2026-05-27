@@ -205,8 +205,17 @@ def preserve(
                 date_iso=date_iso,
                 summary=activity_summary,
             )
+            # Evidence writes don't change Notes/Entities counts, but keeping
+            # the sub-index refresh in the path makes drift impossible to
+            # accumulate from any write op (cheap walk; no-op if already-fresh).
+            sub_writes, new_top_with_counts = indexes.compute_subindex_writes(
+                vault_root, top_index_text=new_top
+            )
+            if new_top_with_counts is not None:
+                new_top = new_top_with_counts
             # Cap-50 trim is recorded in log.md; no per-write warning needed.
             writes.append(PlannedWrite(path=top_index, content=new_top))
+            writes.extend(sub_writes)
         else:
             warnings.append("Knowledge Base/index.md missing; skipped Recent activity bump")
 

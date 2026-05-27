@@ -454,7 +454,10 @@ def build_server(*, require_auth: bool) -> FastMCP:
         edits via `note`/`add`. Does NOT modify anything.
 
         Categories (default: all):
-        - `broken_wikilink`: `[[X]]` whose target file doesn't exist
+        - `broken_wikilink`: `[[X]]` whose target file doesn't exist.
+          Skips wikilinks inside fenced code blocks and inline code spans.
+          Bare names resolve against filename stems AND frontmatter `title:`
+          (so date-prefixed sources with a title match are not flagged).
         - `orphan_entity`: `Entities/...` file with no inbound wikilinks
         - `unprocessed_source`: source with empty `ingested_into:` (no notes
           have compiled from it yet)
@@ -463,6 +466,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
           (`warning_letter_incident` vs `warning-letter-incident` vs
           `Warning-Letter-Incident`). Mechanical drift only; semantic
           near-duplicates like `metabolism` vs `metabolic` aren't flagged.
+        - `frontmatter_compliance`: per-page-type required-field gaps,
+          `tenant:` set without `project: q`, patterns using singular
+          `project:` instead of plural `projects:`.
 
         Args:
             categories: Optional filter; only run these checks. Each must be

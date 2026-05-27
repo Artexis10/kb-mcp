@@ -160,12 +160,23 @@ def add(
     )
 
     kb = kb_root(vault_root)
+    # Refresh the Notes/Entities counts in the top index alongside the
+    # Sources counts that compute_updates() already handled. `add` doesn't
+    # change Notes/Entities counts, so no override needed.
+    sub_writes, top_with_counts = indexes.compute_subindex_writes(
+        vault_root, top_index_text=update.top_index_content
+    )
+    top_index_final = (
+        top_with_counts if top_with_counts is not None
+        else update.top_index_content
+    )
     writes = [
         PlannedWrite(path=source_path, content=source_md),
         PlannedWrite(path=kb / "Sources" / "index.md", content=update.sources_index_content),
-        PlannedWrite(path=kb / "index.md", content=update.top_index_content),
+        PlannedWrite(path=kb / "index.md", content=top_index_final),
         PlannedWrite(path=kb / "log.md", content=update.log_content),
     ]
+    writes.extend(sub_writes)
 
     warnings: list[str] = []
     if slug_warning:

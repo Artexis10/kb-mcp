@@ -1,15 +1,23 @@
 """Read-only audit of the Knowledge Base. Returns structured findings.
 
-v1 checks (all read-only; no writes ever):
-- `broken_wikilink`: `[[...]]` whose resolved target file doesn't exist
+Checks (all read-only; no writes ever):
+- `broken_wikilink`: `[[...]]` whose resolved target file doesn't exist.
+  Skips wikilinks inside fenced code blocks and inline code spans (so
+  `[[:space:]]` regex literals don't false-positive). Bare names resolve
+  against filename stems AND frontmatter `title:` (so date-prefixed
+  sources with a title match are not flagged).
 - `orphan_entity`: file under `Entities/` with no inbound wikilinks from
   anywhere in `Knowledge Base/`
 - `unprocessed_source`: `type: source` page whose `ingested_into:` is empty
 - `index_drift`: top-level `index.md` Counts disagree with on-disk counts
+- `tag_inconsistency`: case/separator variants of the same tag
+- `frontmatter_compliance`: per-page-type required-field gaps,
+  `tenant:` set without `project: q`, patterns using `project:` (singular)
+  instead of `projects:` (plural list)
 
-Audit is the diagnostic counterpart to `add` and `note`. The intent is for
-Claude (or Hugo) to call it, read the findings, and follow up with targeted
-fixes via the existing write tools — not auto-fix.
+Audit is the diagnostic counterpart to the writers. Output is a proposal
+report; nothing is rewritten without explicit confirmation via the
+existing write tools (no auto-fix).
 """
 
 from __future__ import annotations
@@ -21,14 +29,14 @@ from pathlib import Path
 
 from . import find as find_module
 from . import indexes
-from .vault import kb_root
+from .vault import _mask_code_spans, kb_root, parse_frontmatter
 
 
 log = logging.getLogger(__name__)
 
 ALL_CATEGORIES: tuple[str, ...] = (
     "broken_wikilink", "orphan_entity", "unprocessed_source",
-    "index_drift", "tag_inconsistency",
+    "index_drift", "tag_inconsistency", "frontmatter_compliance",
 )
 
 # Matches [[Target]] or [[Target|Alias]]. Target may contain '/' for paths.
@@ -109,6 +117,8 @@ def audit(
         findings.extend(_check_index_drift(vault_root))
     if "tag_inconsistency" in selected:
         findings.extend(_check_tag_inconsistency(pages))
+    if "frontmatter_compliance" in selected:
+        findings.extend(_check_frontmatter_compliance(pages))
 
     summary: dict[str, int] = {}
     for f in findings:
@@ -151,8 +161,9 @@ def _check_broken_wikilinks(
     # SKILL.md rule 1 explicitly calls these out as link targets. Build the
     # existence set from the full vault so those don't false-positive.
     full_paths: set[str] = set()          # vault-relative, no .md, e.g. "Products/Q/Strategy"
-    kb_stripped_paths: set[str] = set()   # KB-relative, no .md, e.g. "Notes/Insights/foo"
+    kb_stripped_paths: set[str] = set()   # KB-relative, no .md
     names_to_paths: dict[str, str] = {}   # bare filename (no ext) → first vault-rel path
+    titles_to_paths: dict[str, list[str]] = {}  # lower(frontmatter title) → paths
     for md_path in _walk_vault_md(vault_root):
         try:
             rel = md_path.resolve().relative_to(vault_root.resolve()).as_posix()
@@ -162,22 +173,46 @@ def _check_broken_wikilinks(
         full_paths.add(no_ext)
         kb_stripped_paths.add(no_ext.removeprefix("Knowledge Base/"))
         names_to_paths.setdefault(md_path.stem, no_ext)
+        # Title fallback: lets `[[North-Led Content Manual]]` resolve to a
+        # date-prefixed source whose frontmatter `title:` matches.
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        fm, _, _ = parse_frontmatter(text)
+        title = fm.get("title") if isinstance(fm, dict) else None
+        if isinstance(title, str) and title.strip():
+            titles_to_paths.setdefault(title.strip().lower(), []).append(no_ext)
 
     for page in pages:
-        for match in WIKILINK_PATTERN.finditer(page.body):
+        # Skip wikilinks inside fenced code blocks and inline code spans —
+        # `[[:space:]]` and similar regex/bash snippets aren't real links.
+        body_masked = _mask_code_spans(page.body)
+        for match in WIKILINK_PATTERN.finditer(body_masked):
             target = match.group(1).strip()
             if target.endswith("/"):
                 # Folder hub link, not a page link.
                 continue
-            normalized = target.removeprefix("Knowledge Base/").lstrip("/")
+            # Strip `#anchor` for resolution — anchors are intra-page jumps,
+            # not file paths.
+            target_for_resolve = target.split("#", 1)[0].strip()
+            if not target_for_resolve:
+                continue
+            normalized = target_for_resolve.removeprefix("Knowledge Base/").lstrip("/")
             if normalized in kb_stripped_paths:
                 continue
-            if target.lstrip("/") in full_paths:
+            if target_for_resolve.lstrip("/") in full_paths:
                 continue
             # Bare-name lookup: Obsidian resolves [[name]] by filename anywhere
             # in the vault. Only attempt if no path separator.
-            if "/" not in target and target in names_to_paths:
-                continue
+            if "/" not in target_for_resolve:
+                if target_for_resolve in names_to_paths:
+                    continue
+                # Title fallback. Only resolves when unambiguous; ambiguous
+                # title matches stay flagged so Hugo can disambiguate.
+                title_matches = titles_to_paths.get(target_for_resolve.lower())
+                if title_matches and len(title_matches) == 1:
+                    continue
             findings.append(AuditFinding(
                 category="broken_wikilink",
                 severity="warn",
@@ -442,6 +477,93 @@ def _check_tag_inconsistency(
                 ),
             ))
 
+    return findings
+
+
+# ---------------- check: frontmatter_compliance ----------------
+
+
+# Required fields per page-type (per `_Schema/references/frontmatter.md`).
+# Optional / per-type-conditional fields aren't enforced — those depend on
+# subtype and can't be validated without parser-level type intent.
+_REQUIRED_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "source": ("type", "source_type", "captured"),
+    "research-note": ("type", "project", "status", "created", "updated"),
+    "insight": ("type", "status", "created", "updated"),
+    "failure": ("type", "status", "created", "updated"),
+    "pattern": ("type", "status", "created", "updated"),
+    "experiment": ("type", "domain", "status", "created", "updated", "started", "duration"),
+    "production-log": ("type", "medium", "status", "created", "updated"),
+    "entity": ("type", "entity_type", "status", "created", "updated"),
+}
+
+
+def _check_frontmatter_compliance(
+    pages: list[find_module.ParsedPage],
+) -> list[AuditFinding]:
+    """Surface per-page-type frontmatter problems.
+
+    Three classes of finding:
+    - Missing required field for the declared `type:`.
+    - `tenant:` set on a non-Q page (the `tenant` field is Q-only).
+    - Pattern page with singular `project:` instead of plural `projects:`
+      (the convention for cross-project patterns).
+    """
+    findings: list[AuditFinding] = []
+    for page in pages:
+        fm = page.frontmatter
+        page_type = fm.get("type")
+        if not isinstance(page_type, str):
+            continue
+        required = _REQUIRED_FIELDS_BY_TYPE.get(page_type)
+        if required:
+            missing = [k for k in required if not fm.get(k)]
+            if missing:
+                findings.append(AuditFinding(
+                    category="frontmatter_compliance",
+                    severity="warn",
+                    path=page.rel_path,
+                    detail=(
+                        f"{page_type!r} page missing required frontmatter "
+                        f"field(s): {missing}"
+                    ),
+                    proposed_fix=(
+                        f"Add the missing field(s) via `set_frontmatter_field` "
+                        f"or `edit`. See `_Schema/references/frontmatter.md` "
+                        f"for the per-type required set."
+                    ),
+                ))
+        # tenant: is Q-only.
+        if fm.get("tenant") and fm.get("project") != "q":
+            findings.append(AuditFinding(
+                category="frontmatter_compliance",
+                severity="warn",
+                path=page.rel_path,
+                detail=(
+                    f"`tenant: {fm['tenant']!r}` set but `project` is "
+                    f"{fm.get('project')!r}, not 'q'. The tenant field is "
+                    f"Q-only."
+                ),
+                proposed_fix=(
+                    "Either set `project: q` (if this is a Q-tenant note) "
+                    "or remove the `tenant:` field."
+                ),
+            ))
+        # Patterns should use plural `projects:`, not singular `project:`.
+        if page_type == "pattern" and fm.get("project") and not fm.get("projects"):
+            findings.append(AuditFinding(
+                category="frontmatter_compliance",
+                severity="info",
+                path=page.rel_path,
+                detail=(
+                    "pattern page uses singular `project:` instead of plural "
+                    "`projects:` (the convention for cross-project patterns)."
+                ),
+                proposed_fix=(
+                    "Rename to `projects: [<key>]` (plural list form) via "
+                    "`set_frontmatter_field`."
+                ),
+            ))
     return findings
 
 

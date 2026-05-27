@@ -39,7 +39,13 @@ from pathlib import Path
 
 from . import find as find_module
 from . import indexes
-from .vault import PlannedWrite, batch_atomic_write, kb_root
+from .vault import (
+    PlannedWrite,
+    WikilinkResolver,
+    batch_atomic_write,
+    kb_root,
+    normalize_body_wikilinks,
+)
 
 
 log = logging.getLogger(__name__)
@@ -162,6 +168,17 @@ def edit(
 
     # Replace body if provided; otherwise keep original body.
     new_body_final = new_body if new_body is not None else body
+
+    # Normalize wikilinks in the body to canonical full form when caller
+    # supplied a new body. Existing body is left alone to preserve user-intended
+    # legacy forms in untouched files (Phase 5 cleanup handles vault-wide).
+    body_warnings: list[str] = []
+    if new_body is not None:
+        resolver = WikilinkResolver(vault_root)
+        new_body_final, body_warnings = normalize_body_wikilinks(
+            new_body_final, vault_root, resolver=resolver
+        )
+
     # Normalize trailing newline so we don't accumulate blanks across edits.
     new_body_final = new_body_final.rstrip() + "\n"
 
@@ -171,7 +188,19 @@ def edit(
     kb = kb_root(vault_root)
     log_file = kb / "log.md"
     writes: list[PlannedWrite] = [PlannedWrite(path=abs_path, content=new_text)]
-    warnings: list[str] = []
+    warnings: list[str] = list(body_warnings)
+
+    # Opportunistic sub-index refresh — `edit` doesn't change counts, but
+    # surfacing any drift on every write keeps the indexes self-healing.
+    top_index = kb / "index.md"
+    if top_index.exists():
+        current_top = top_index.read_text(encoding="utf-8")
+        sub_writes, new_top = indexes.compute_subindex_writes(
+            vault_root, top_index_text=current_top
+        )
+        if new_top is not None and new_top != current_top:
+            writes.append(PlannedWrite(path=top_index, content=new_top))
+        writes.extend(sub_writes)
 
     rel_no_ext = rel_path.removesuffix(".md")
     if log_file.exists():

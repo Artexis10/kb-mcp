@@ -26,9 +26,11 @@ from typing import Any
 from .vault import (
     PlannedWrite,
     VaultPathError,
+    WikilinkResolver,
     batch_atomic_write,
     in_append_only_tree,
     in_curated_tree,
+    normalize_body_wikilinks,
     resolve_under_vault,
     serialize_frontmatter,
     write_log_entry,
@@ -111,6 +113,18 @@ def create_file(
     today = today or dt.date.today()
     date_iso = today.isoformat()
 
+    # For markdown files, normalize wikilinks in the body to canonical form.
+    # Skip non-md files (skill manifests, JSON, scratch) — their `[[...]]`
+    # patterns may not be Obsidian wikilinks.
+    warnings: list[str] = []
+    is_markdown = rel_path.endswith(".md")
+    if is_markdown:
+        resolver = WikilinkResolver(vault_root)
+        content, body_warnings = normalize_body_wikilinks(
+            content, vault_root, resolver=resolver
+        )
+        warnings.extend(body_warnings)
+
     if frontmatter is not None:
         fm = dict(frontmatter)
         fm.setdefault("created", date_iso)
@@ -121,7 +135,6 @@ def create_file(
     else:
         full_text = content
 
-    warnings: list[str] = []
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         batch_atomic_write([PlannedWrite(path=abs_path, content=full_text)])

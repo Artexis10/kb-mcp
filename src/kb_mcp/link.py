@@ -25,7 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import indexes
-from .vault import PlannedWrite, batch_atomic_write, kb_root
+from .vault import (
+    PlannedWrite,
+    WikilinkResolver,
+    batch_atomic_write,
+    kb_root,
+    normalize_body_wikilinks,
+    normalize_wikilink,
+)
 
 
 log = logging.getLogger(__name__)
@@ -100,7 +107,6 @@ def link(
     today = today or dt.date.today()
     date_iso = today.isoformat()
     tags_clean = _clean_tags(tags)
-    connections_norm = _normalize_connections(connections)
 
     name_safe = _sanitize_name(name)
     folder = kb_root(vault_root) / "Entities" / ENTITY_TYPE_TO_FOLDER[entity_type]
@@ -118,11 +124,32 @@ def link(
 
     folder.mkdir(parents=True, exist_ok=True)
 
+    rel_entity_no_ext = entity_path.relative_to(vault_root).with_suffix("").as_posix()
+    resolver = WikilinkResolver(vault_root)
+    resolver.add_pending(rel_entity_no_ext, title=name_safe)
+
+    connections_norm, conn_warnings = _normalize_connections(
+        connections, vault_root=vault_root, resolver=resolver
+    )
+
+    # Normalize wikilinks inside the summary and why_in_kb prose so the
+    # entity body lands in canonical form even when written via the bare
+    # `link` API.
+    summary_clean, summary_warnings = normalize_body_wikilinks(
+        summary, vault_root, resolver=resolver
+    )
+    why_clean: str | None = None
+    why_warnings: list[str] = []
+    if why_in_kb:
+        why_clean, why_warnings = normalize_body_wikilinks(
+            why_in_kb, vault_root, resolver=resolver
+        )
+
     entity_md = _render_entity(
         entity_type=entity_type,
         name=name_safe,
-        summary=summary,
-        why_in_kb=why_in_kb,
+        summary=summary_clean,
+        why_in_kb=why_clean,
         date_iso=date_iso,
         tags=tags_clean,
         connections=connections_norm,
@@ -139,10 +166,9 @@ def link(
     )
 
     rel_entity = entity_path.relative_to(vault_root).as_posix()
-    rel_entity_no_ext = entity_path.relative_to(vault_root).with_suffix("").as_posix()
 
     writes: list[PlannedWrite] = [PlannedWrite(path=entity_path, content=entity_md)]
-    warnings: list[str] = []
+    warnings: list[str] = list(conn_warnings) + list(summary_warnings) + list(why_warnings)
 
     # Index + log updates.
     kb = kb_root(vault_root)
@@ -169,8 +195,18 @@ def link(
             date_iso=date_iso,
             summary=activity_summary,
         )
+        # Refresh Entities sub-index + top-index Counts. Pass the new
+        # entity's path so counts reflect post-write state.
+        sub_writes, new_top_with_counts = indexes.compute_subindex_writes(
+            vault_root,
+            top_index_text=new_top,
+            pending_paths=[rel_entity_no_ext],
+        )
+        if new_top_with_counts is not None:
+            new_top = new_top_with_counts
         # Cap-50 trim is recorded in log.md; no per-write warning needed.
         writes.append(PlannedWrite(path=top_index, content=new_top))
+        writes.extend(sub_writes)
     else:
         warnings.append("Knowledge Base/index.md missing; skipped Recent activity bump")
 
@@ -185,10 +221,6 @@ def link(
         writes.append(PlannedWrite(path=log_file, content=new_log))
     else:
         warnings.append("Knowledge Base/log.md missing; skipped log entry")
-
-    warnings.append(
-        "Sub-folder Entities/<Type>/index.md not auto-updated; reconcile via desk audit."
-    )
 
     try:
         batch_atomic_write(writes)
@@ -346,25 +378,36 @@ def _render_entity(
 # ---------------- helpers ----------------
 
 
-def _normalize_connections(connections: list[str] | None) -> list[str]:
-    """Strip `[[...]]` wrappers; normalize to KB-rooted form."""
+def _normalize_connections(
+    connections: list[str] | None,
+    *,
+    vault_root: Path,
+    resolver: WikilinkResolver,
+) -> tuple[list[str], list[str]]:
+    """Canonicalize each connection wikilink to full vault-rooted form.
+
+    Returns (canonical_connections, warnings). Same fall-through behaviour
+    as `note._normalize_sources`: unresolved targets pass through with a
+    warning so forward refs aren't blocked.
+    """
     if not connections:
-        return []
+        return [], []
     out: list[str] = []
     seen: set[str] = set()
+    warnings: list[str] = []
     for c in connections:
         c = (c or "").strip()
         if not c:
             continue
-        if c.startswith("[[") and c.endswith("]]"):
-            c = c[2:-2]
-        c = c.strip()
-        if not c.startswith("Knowledge Base/"):
-            c = "Knowledge Base/" + c.lstrip("/")
-        if c not in seen:
-            seen.add(c)
-            out.append(c)
-    return out
+        canonical, warning = normalize_wikilink(
+            c, vault_root, resolver=resolver, strict=False
+        )
+        if warning:
+            warnings.append(warning)
+        if canonical not in seen:
+            seen.add(canonical)
+            out.append(canonical)
+    return out, warnings
 
 
 def _clean_tags(tags: list[str] | None) -> list[str]:
