@@ -29,6 +29,8 @@ from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 from fastmcp.server.middleware.middleware import Middleware, MiddlewareContext
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import add as add_module
 from . import append_to_file as append_to_file_module
@@ -198,6 +200,28 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
     mcp = FastMCP("kb-mcp", auth=auth, icons=_server_icons())
     mcp.add_middleware(CallTraceMiddleware())
+
+    if auth is not None:
+        # claude.ai's OAuth gateway probes /.well-known/oauth-protected-resource
+        # (the bare path, no resource suffix) before following the
+        # WWW-Authenticate `resource_metadata` pointer. When it 404s there,
+        # the connect flow aborts with `mcp_registration_failed`. FastMCP only
+        # serves the RFC-9728 path-specific variant (/oauth-protected-resource/mcp),
+        # so mirror the metadata at the bare path to make registration reliable.
+        _resource_url = f"{base_url}/mcp"
+        _issuer_url = f"{base_url}/"
+
+        @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+        async def _oauth_protected_resource_bare(request: Request) -> JSONResponse:
+            return JSONResponse(
+                {
+                    "resource": _resource_url,
+                    "authorization_servers": [_issuer_url],
+                    "scopes_supported": [],
+                    "bearer_methods_supported": ["header"],
+                },
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
 
     @mcp.tool
     def find(
