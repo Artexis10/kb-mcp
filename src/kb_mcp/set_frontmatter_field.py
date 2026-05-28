@@ -141,7 +141,10 @@ def set_frontmatter_field(
 
     warnings: list[str] = []
     try:
-        batch_atomic_write([PlannedWrite(path=abs_path, content=new_text)])
+        batch_atomic_write(
+            [PlannedWrite(path=abs_path, content=new_text)],
+            vault_root=vault_root,
+        )
     except Exception as e:
         log.exception("set_frontmatter_field write failed for %s", rel_path)
         warnings.append(f"partial write — reconcile on desktop: {e}")

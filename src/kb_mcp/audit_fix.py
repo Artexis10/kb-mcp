@@ -279,9 +279,19 @@ def _convert_singular_project_to_plural(fm_text: str) -> tuple[str, str | None]:
 
 
 def audit_fix(
-    vault_root: Path, *, dry_run: bool = False, today: dt.date | None = None
+    vault_root: Path,
+    *,
+    dry_run: bool = False,
+    today: dt.date | None = None,
+    rebuild_embeddings: bool = False,
 ) -> AuditFixReport:
-    """Run audit + auto-apply safe fixes. Read-only if dry_run=True."""
+    """Run audit + auto-apply safe fixes. Read-only if dry_run=True.
+
+    When `rebuild_embeddings=True`, wipes and rebuilds the vector sidecar
+    at `<vault>/Knowledge Base/.embeddings.sqlite` from the current
+    markdown state of every compiled page. Use on first run, after a
+    machine swap, or whenever the sidecar drifts from disk.
+    """
     today = today or dt.date.today()
     today_iso = today.isoformat()
     kb = kb_root(vault_root)
@@ -385,7 +395,7 @@ def audit_fix(
     if writes and not dry_run:
         BATCH = 100
         for i in range(0, len(writes), BATCH):
-            batch_atomic_write(writes[i : i + BATCH])
+            batch_atomic_write(writes[i : i + BATCH], vault_root=vault_root)
         log.info(
             "audit_fix: applied %d file writes (%d compiled, %d index refresh)",
             len(writes), report.files_rewritten, len(refresh_writes),
@@ -398,6 +408,20 @@ def audit_fix(
         # or audit limitations — propose only.
         # Other categories are propose-only by category-level policy.
         report.proposed.append(f)
+
+    # ---- Optional full rebuild of the embedding sidecar ----
+    if rebuild_embeddings and not dry_run:
+        try:
+            from . import embeddings
+            count = embeddings.EmbeddingIndex(vault_root).rebuild_all()
+            report.summary["embeddings_chunks"] = count
+            log.info("audit_fix: rebuilt embedding sidecar (%d chunks)", count)
+        except ImportError as e:
+            log.warning(
+                "rebuild_embeddings requested but embeddings unavailable: %s", e
+            )
+        except Exception as e:
+            log.exception("rebuild_embeddings failed: %s", e)
 
     # ---- Summary ----
     report.summary["fixed"] = len(report.fixed)

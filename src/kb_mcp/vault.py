@@ -134,13 +134,21 @@ class PlannedWrite:
     content: str
 
 
-def batch_atomic_write(writes: Iterable[PlannedWrite]) -> list[Path]:
+def batch_atomic_write(
+    writes: Iterable[PlannedWrite], *, vault_root: Path | None = None
+) -> list[Path]:
     """Stage each write as a sibling .tmp file, then os.replace() them into place.
 
     On any exception during staging, no replacements happen — temps are cleaned.
     Once replacement starts, files are flipped one at a time. A mid-flip failure
     leaves a partially-updated tree: already-replaced files stand, remaining
     temps are cleaned, the exception re-raises so the caller can warn.
+
+    When `vault_root` is supplied, the embedding sidecar at
+    `<vault>/Knowledge Base/.embeddings.sqlite` is refreshed for every
+    embeddable file in the batch after the markdown writes succeed. Failures
+    in the embedding pass are logged and swallowed — keyword-mode find()
+    still works, and `audit_fix(rebuild_embeddings=True)` recovers drift.
     """
     writes = list(writes)
     staged: list[tuple[Path, Path]] = []  # (final, tmp)
@@ -173,6 +181,17 @@ def batch_atomic_write(writes: Iterable[PlannedWrite]) -> list[Path]:
             if final not in replaced_paths and tmp.exists():
                 tmp.unlink(missing_ok=True)
         raise
+
+    if vault_root is not None and replaced:
+        try:
+            from . import embeddings
+            embeddings.upsert_after_write(vault_root, replaced)
+        except Exception:  # noqa: BLE001 — embeddings are best-effort
+            import logging
+            logging.getLogger(__name__).exception(
+                "embedding upsert failed after batch_atomic_write; "
+                "sidecar may be stale until audit_fix(rebuild_embeddings=True)"
+            )
     return replaced
 
 

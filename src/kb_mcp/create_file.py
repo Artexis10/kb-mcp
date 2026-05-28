@@ -137,7 +137,10 @@ def create_file(
 
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        batch_atomic_write([PlannedWrite(path=abs_path, content=full_text)])
+        batch_atomic_write(
+            [PlannedWrite(path=abs_path, content=full_text)],
+            vault_root=vault_root,
+        )
     except Exception as e:
         log.exception("create_file write failed for %s", rel_path)
         warnings.append(f"partial write — reconcile on desktop: {e}")

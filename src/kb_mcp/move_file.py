@@ -163,7 +163,7 @@ def move_file(
     writes.append(PlannedWrite(path=new_abs, content=old_contents))
 
     try:
-        batch_atomic_write(writes)
+        batch_atomic_write(writes, vault_root=vault_root)
     except Exception as e:
         log.exception("move_file: link-update batch failed for %s -> %s", old_rel, new_rel)
         warnings.append(f"partial write — reconcile on desktop: {e}")
@@ -177,6 +177,16 @@ def move_file(
             f"new file written but could not remove old {old_rel!r}: {e}. "
             f"Delete it manually on the desk."
         )
+    else:
+        # Old path is gone; purge its embedding sidecar rows. The new path
+        # was already re-indexed by batch_atomic_write above.
+        try:
+            from . import embeddings
+            embeddings.delete_after_remove(vault_root, [old_rel])
+        except Exception:  # noqa: BLE001 — embeddings are best-effort
+            log.exception(
+                "embedding delete failed for moved %s; sidecar may be stale", old_rel
+            )
 
     # If we just moved a file out of `_trash/`, its `.meta.json` sidecar (if
     # any) is now an orphan. Drop the sidecar — recovery is "removed from

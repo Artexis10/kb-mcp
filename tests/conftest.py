@@ -15,6 +15,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_VAULT = REPO_ROOT / "tests" / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the heavy bge-base load by default in the test suite.
+
+    Individual tests that exercise embeddings (test_hybrid_search.py)
+    delete this env var via their own monkeypatch.
+    """
+    monkeypatch.setenv("KB_MCP_DISABLE_EMBEDDINGS", "1")
+
+
 @pytest.fixture
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy tests/fixtures/ into a tmp dir; return it as the vault root."""

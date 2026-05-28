@@ -12,6 +12,10 @@ dependencies = [
     "pyyaml>=6.0",
     "python-slugify>=8.0",
     "python-dotenv>=1.0",
+    "sentence-transformers>=2.7",
+    "rank-bm25>=0.2.2",
+    "numpy>=1.26",
+    "torch>=2.12",
 ]
 
 [dependency-groups]
@@ -30,3 +34,15 @@ packages = ["src/kb_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+# Blackwell (RTX 5080, sm_120) needs CUDA wheels — default PyPI torch on
+# Windows is CPU-only. Use the cu132 index (latest as of 2026-05; carries
+# torch 2.12 cp313 win_amd64). `explicit = true` keeps this index out of
+# general resolution so it only fires for the torch package.
+[tool.uv.sources]
+torch = { index = "pytorch-cu132" }
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true

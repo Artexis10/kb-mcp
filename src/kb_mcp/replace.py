@@ -176,7 +176,7 @@ def replace(
     ] + log_writes
 
     try:
-        batch_atomic_write(writes)
+        batch_atomic_write(writes, vault_root=vault_root)
     except Exception as e:
         log.exception("partial write during replace(); some files may be updated")
         warnings.append(f"partial write — reconcile on desktop: {e}")

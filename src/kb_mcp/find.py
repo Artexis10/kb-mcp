@@ -149,8 +149,9 @@ def find(
     tags: list[str] | None = None,
     limit: int = 15,
     scope: str = "kb",
+    mode: str = "hybrid",
 ) -> list[Hit]:
-    """Search the vault. Returns up to `limit` hits, most recently updated first.
+    """Search the vault. Returns up to `limit` hits.
 
     `scope` controls the walk root:
     - "kb" (default): only `Knowledge Base/`. Compiled material + sources.
@@ -160,16 +161,61 @@ def find(
       outside the KB. Existing filters still apply — curated-tree pages
       typically lack structured frontmatter so `types`/`projects`/`tags`
       filters won't match many of them; free-text queries work fine.
+
+    `mode` controls the ranker:
+    - "hybrid" (default): BM25 + local vector embeddings fused via RRF.
+      Best recall on natural-language queries. Empty query falls back to
+      keyword behavior (filtered most-recent). Embedding sidecar is
+      KB-scoped; with `scope="vault"`, vector results cover KB only
+      while BM25 covers the full vault.
+    - "keyword": case-insensitive substring matching across title + body,
+      sorted most-recently-updated first. The original behavior, preserved
+      for backward compatibility.
+    - "vector": vector embeddings only, no BM25. Testing aid for
+      isolating semantic recall.
     """
     if scope not in ("kb", "vault"):
         raise ValueError(
             f"find: scope must be 'kb' or 'vault', got {scope!r}"
+        )
+    if mode not in ("hybrid", "keyword", "vector"):
+        raise ValueError(
+            f"find: mode must be 'hybrid', 'keyword', or 'vector', got {mode!r}"
         )
     if limit < 1:
         limit = 1
     limit = min(limit, 100)
     query_norm = (query or "").lower().strip()
 
+    # Empty queries always degrade to keyword behavior — there's no signal
+    # to embed or score with, just "give me recent stuff that matches the
+    # structured filters."
+    if mode == "keyword" or not query_norm:
+        return _find_keyword(
+            vault_root,
+            query_norm=query_norm,
+            types=types, projects=projects, tags=tags,
+            limit=limit, scope=scope,
+        )
+    return _find_semantic(
+        vault_root,
+        query=query, query_norm=query_norm,
+        types=types, projects=projects, tags=tags,
+        limit=limit, scope=scope, mode=mode,
+    )
+
+
+def _find_keyword(
+    vault_root: Path,
+    *,
+    query_norm: str,
+    types: list[str] | None,
+    projects: list[str] | None,
+    tags: list[str] | None,
+    limit: int,
+    scope: str,
+) -> list[Hit]:
+    """Original keyword-mode find. Preserved for backward compat."""
     if scope == "kb":
         kb = vault_root / "Knowledge Base"
         if not kb.is_dir():
@@ -177,12 +223,10 @@ def find(
             return []
         walk = _walk_md(kb)
     else:
-        # Lazy import to avoid a circular: vault imports nothing else, but
-        # this keeps the dependency direction crisp.
         from .vault import walk_vault_md
         walk = walk_vault_md(vault_root)
 
-    hits: list[tuple[str, Hit]] = []  # (sort_key, hit)
+    hits: list[tuple[str, Hit]] = []
     for path in walk:
         page = _CACHE.get(path, vault_root)
         if page is None:
@@ -206,9 +250,137 @@ def find(
             )
         )
 
-    # Sort: most recently updated first; ties broken by path for determinism.
     hits.sort(key=lambda t: (t[0], t[1].path), reverse=True)
     return [h for _, h in hits[:limit]]
+
+
+def _find_semantic(
+    vault_root: Path,
+    *,
+    query: str,
+    query_norm: str,
+    types: list[str] | None,
+    projects: list[str] | None,
+    tags: list[str] | None,
+    limit: int,
+    scope: str,
+    mode: str,
+) -> list[Hit]:
+    """Hybrid (BM25+vector) or vector-only mode."""
+    # Lazy imports — keep keyword-mode users out of the torch import path.
+    from . import bm25, embeddings, fusion
+
+    # Pull more than we need so post-filter losses don't starve the result.
+    candidate_k = max(limit * 5, 50)
+
+    # ---- Vector contribution ----
+    vector_ranking: list[str] = []
+    chunk_text_by_path: dict[str, str] = {}
+    try:
+        idx = embeddings.EmbeddingIndex(vault_root)
+        query_vec = embeddings.embed_texts([query], is_query=True)[0]
+        chunk_hits = idx.search(query_vec, k=candidate_k * 3)  # over-fetch chunks
+        # Collapse chunks → file-level: keep the best-scoring chunk per file.
+        best_per_file: dict[str, tuple[float, str]] = {}
+        for fp, _idx, ctext, score in chunk_hits:
+            existing = best_per_file.get(fp)
+            if existing is None or score > existing[0]:
+                best_per_file[fp] = (score, ctext)
+        vector_ranking = sorted(
+            best_per_file.keys(), key=lambda p: -best_per_file[p][0]
+        )[:candidate_k]
+        chunk_text_by_path = {p: best_per_file[p][1] for p in vector_ranking}
+    except ImportError as e:
+        log.warning(
+            "vector search unavailable (%s); falling back to BM25-only ranking",
+            e,
+        )
+    except Exception as e:
+        log.warning("vector search failed: %s; falling back to BM25-only", e)
+
+    if mode == "vector":
+        rankings = [vector_ranking] if vector_ranking else []
+    else:
+        # ---- BM25 contribution ----
+        bm25_ranking: list[str] = []
+        try:
+            bm25_hits = bm25.search(vault_root, query, k=candidate_k, scope=scope)
+            bm25_ranking = [p for p, _ in bm25_hits]
+        except ImportError as e:
+            log.warning("BM25 unavailable (%s); using vector-only", e)
+        except Exception as e:
+            log.warning("BM25 search failed: %s; using vector-only", e)
+        rankings = [r for r in (vector_ranking, bm25_ranking) if r]
+
+    if not rankings:
+        # Both rankers failed or produced nothing. Degrade to keyword.
+        log.info("semantic search produced no candidates; falling back to keyword")
+        return _find_keyword(
+            vault_root,
+            query_norm=query_norm,
+            types=types, projects=projects, tags=tags,
+            limit=limit, scope=scope,
+        )
+
+    fused = fusion.reciprocal_rank_fusion(rankings, k=60)
+    vector_paths: set[str] = set(vector_ranking)
+
+    # Resolve fused paths back to ParsedPage, filter, build hits in fused order.
+    # BM25-only candidates must still satisfy the keyword all-tokens-present
+    # gate — without it, BM25's word-level tokenizer surfaces files that share
+    # any single token with the query (false positives). Vector-ranked
+    # candidates skip that gate by design: surfacing semantically-similar
+    # files that don't contain the literal tokens is the whole point.
+    hits: list[Hit] = []
+    seen: set[str] = set()
+    for rel_path, _score in fused:
+        if rel_path in seen:
+            continue
+        seen.add(rel_path)
+        abs_path = vault_root / rel_path
+        page = _CACHE.get(abs_path, vault_root)
+        if page is None:
+            continue
+        if not _passes_filters(page, types=types, projects=projects, tags=tags):
+            continue
+        keyword_excerpt = _make_excerpt(page, query_norm)
+        if rel_path not in vector_paths and keyword_excerpt is None:
+            # BM25-only, no literal match. Drop.
+            continue
+        chunk = chunk_text_by_path.get(rel_path)
+        excerpt = _semantic_excerpt(page, query_norm, chunk, keyword_excerpt)
+        hits.append(Hit(
+            path=page.rel_path,
+            type=page.page_type,
+            scope=page.scope,
+            title=page.title,
+            updated=page.updated,
+            excerpt=excerpt or "",
+        ))
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def _semantic_excerpt(
+    page: ParsedPage,
+    query_norm: str,
+    best_chunk: str | None,
+    keyword_excerpt: str | None,
+) -> str:
+    """Prefer the matching chunk text (trimmed); fall back to the keyword excerpt."""
+    if best_chunk:
+        # Strip the title prefix the chunker prepends — it's redundant with
+        # the Hit.title field.
+        body = best_chunk
+        title_prefix = (page.title or "").strip()
+        if title_prefix and body.startswith(title_prefix + "\n\n"):
+            body = body[len(title_prefix) + 2:]
+        snippet = body.strip()[:EXCERPT_MAX_LEN].strip()
+        if len(body) > EXCERPT_MAX_LEN:
+            snippet = snippet.rstrip() + "…"
+        return _collapse(snippet)
+    return keyword_excerpt or ""
 
 
 def _walk_md(root: Path):

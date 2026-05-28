@@ -196,6 +196,18 @@ def delete_directory(
         trash_abs = trash_root / f"{trash_basename}-{i}"
         i += 1
 
+    # Capture vault-relative paths for every .md file in the doomed tree —
+    # before the move, while they still resolve under vault_root. Used to
+    # purge the embedding sidecar after the trash move succeeds.
+    md_rels_to_unindex: list[str] = []
+    for md in md_files:
+        try:
+            md_rels_to_unindex.append(
+                md.resolve().relative_to(vault_root.resolve()).as_posix()
+            )
+        except ValueError:
+            continue
+
     try:
         shutil.move(str(abs_path), str(trash_abs))
     except OSError as e:
@@ -203,6 +215,16 @@ def delete_directory(
             code="TRASH_FAILED",
             reason=f"could not move {rel_path} to trash: {e}",
         ) from e
+
+    if md_rels_to_unindex:
+        try:
+            from . import embeddings
+            embeddings.delete_after_remove(vault_root, md_rels_to_unindex)
+        except Exception:  # noqa: BLE001 — embeddings are best-effort
+            log.exception(
+                "embedding delete failed for trashed tree %s; sidecar may be stale",
+                rel_path,
+            )
 
     # Metadata sidecar.
     meta = {

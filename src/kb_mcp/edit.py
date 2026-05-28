@@ -226,7 +226,7 @@ def edit(
         warnings.append("Knowledge Base/log.md missing; skipped log entry")
 
     try:
-        batch_atomic_write(writes)
+        batch_atomic_write(writes, vault_root=vault_root)
     except Exception as e:
         log.exception("partial write during edit(); some files may be updated")
         warnings.append(f"partial write — reconcile on desktop: {e}")

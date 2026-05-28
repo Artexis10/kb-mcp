@@ -232,14 +232,17 @@ def build_server(*, require_auth: bool) -> FastMCP:
         tags: list[str] | None = None,
         limit: int = 15,
         scope: str = "kb",
+        mode: str = "hybrid",
     ) -> list[dict]:
         """Search the vault. Filters are AND'd; tag/project lists are OR'd within.
 
         Args:
-            query: Case-insensitive. Tokenized on whitespace; every token must
-                appear somewhere in title or body (any order). So
-                `contract employment` matches a page about "employment contract".
-                Empty string returns most-recent filtered hits.
+            query: Free-text search string. In "hybrid"/"vector" mode it's
+                embedded with bge-base for semantic recall. In "keyword" mode
+                it's tokenized on whitespace and every token must appear in
+                title or body (any order) — `contract employment` matches a
+                page about "employment contract". Empty string always falls
+                back to "most-recent filtered" behaviour regardless of mode.
             types: Filter to these page types (source, research-note, insight, failure, pattern, experiment, production-log, entity).
             projects: Filter to pages whose `project` or `projects:` includes any of these keys.
             tags: Filter to pages whose `tags:` includes any of these (case-insensitive).
@@ -253,9 +256,19 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 won't match curated pages that lack those frontmatter
                 fields. `_Schema/`, `_trash/`, `_attachments/`, and
                 `.obsidian/` are excluded either way.
+            mode: Ranker. "hybrid" (default) fuses BM25 + local vector
+                embeddings via reciprocal rank fusion — best recall on
+                natural-language queries. "keyword" preserves the original
+                case-insensitive substring matching, sorted by `updated:`.
+                "vector" is vector-only (testing aid). If the embedding
+                sidecar hasn't been built yet, hybrid degrades cleanly to
+                BM25-only; run `audit_fix(rebuild_embeddings=true)` to
+                populate it.
 
         Returns:
-            List of {path, type, scope, title, updated, excerpt}.
+            List of {path, type, scope, title, updated, excerpt}. In hybrid
+            mode `excerpt` shows the best-matching chunk; in keyword mode
+            it's a snippet anchored to the literal query match.
         """
         hits = find_module.find(
             vault_root,
@@ -265,6 +278,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             tags=tags,
             limit=limit,
             scope=scope,
+            mode=mode,
         )
         return [h.as_dict() for h in hits]
 
@@ -483,7 +497,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         return report.as_dict()
 
     @mcp.tool
-    def audit_fix(dry_run: bool = False) -> dict:
+    def audit_fix(dry_run: bool = False, rebuild_embeddings: bool = False) -> dict:
         """Run audit + auto-apply safe fixes; propose-only for risky categories.
 
         Closes the lint-finds-but-doesn't-fix loop. Safe categories get
@@ -518,15 +532,24 @@ def build_server(*, require_auth: bool) -> FastMCP:
         Args:
             dry_run: If true, compute what would change without writing.
                 Default false.
+            rebuild_embeddings: If true, wipe and rebuild the vector sidecar
+                at `<vault>/Knowledge Base/.embeddings.sqlite` after the fix
+                sweep. Use on first run, after a machine swap, or when the
+                sidecar has drifted from disk. Ignored when `dry_run=true`.
 
         Returns:
             {fixed: [{category, path, detail, action}, ...],
              proposed: [<audit findings>],
              files_rewritten: int,
-             summary: {fixed: N, proposed: N, fixed_<category>: N, ...},
+             summary: {fixed: N, proposed: N, fixed_<category>: N,
+                       embeddings_chunks?: N},
              dry_run: bool}
         """
-        report = audit_fix_module.audit_fix(vault_root, dry_run=dry_run)
+        report = audit_fix_module.audit_fix(
+            vault_root,
+            dry_run=dry_run,
+            rebuild_embeddings=rebuild_embeddings,
+        )
         return report.as_dict()
 
     @mcp.tool
