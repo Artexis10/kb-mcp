@@ -551,6 +551,62 @@ Tests run against a fixture vault under `tests/fixtures/`. The **real
 vault is never touched** during testing — `conftest.py` copies fixtures
 to a per-test tmp dir and sets `KB_MCP_VAULT_PATH` to the copy.
 
+## Retrieval evaluation & feedback loop
+
+Ranking is **measured, not guessed**. The tunable knobs (`RRF k`, the
+compiled/source boosts, `candidate_k`, the graph seed cap) live in one place —
+`find.RankingConfig` — so an offline harness can sweep them against a golden set
+and pick winners by NDCG/MRR. `RankingConfig` is internal; it's not exposed on the
+`find` MCP tool (claude.ai needs no knobs API).
+
+```powershell
+# Baseline NDCG@5/@10, MRR, recall@10 over the real vault (embeddings ON):
+uv run python scripts/eval_retrieval.py
+# Grid-search the ranking knobs; --markdown emits a table to file as a pattern note:
+uv run python scripts/eval_retrieval.py --sweep --markdown
+#   add --include-rerank to add the (slow) cross-encoder axis
+```
+
+The golden set is `tests/golden/queries.yaml` — hand-seeded against real paths and
+designed to **grow from your own usage**:
+
+- Every `find()` is logged to `logs/queries.jsonl` (query + per-hit ranking
+  signals — no bodies/excerpts) and every `note`/`add`/`replace` to
+  `logs/writes.jsonl` (path + cited sources). Both via `kb_mcp.query_log`,
+  best-effort, gitignored, never Obsidian-synced. No-op under
+  `KB_MCP_DISABLE_EMBEDDINGS` or `KB_MCP_DISABLE_QUERY_LOG`.
+- `scripts/derive_relevance_pairs.py` joins the two: when a write cites a path
+  shortly after a `find()` for some query, that `(query → cited_path)` pair is a
+  weak relevance label. It writes `logs/relevance_pairs.jsonl` and **proposes**
+  (never auto-writes) golden-set additions for you to confirm.
+
+Metric math (`kb_mcp.eval_metrics`) is pure and unit-tested in the fast suite;
+the live-vault eval is a manual `scripts/` run (it needs the bge model).
+
+## Corpus-aware writes
+
+Writes consult the corpus instead of being blind to it — so each new entry makes
+the existing ones more discoverable, not just adds to the pile. Pure retrieval
+(`kb_mcp.corpus_aware`), reusing `find()` + the embedding sidecar; no new
+dependency, no server-side LLM. Suggestions are **surfaced, never auto-applied** —
+the client decides what to wire in.
+
+- **`suggest_links`** (MCP tool, read-only): given an existing `path` OR a
+  `draft_title`+`draft_body`, returns ranked existing pages to link
+  `{path, title, type, why, excerpt}`, preferring graph hubs and excluding the
+  page itself + anything already linked. Run it on a draft before `note`, or on
+  any existing page to densify the graph retroactively.
+- **`note` suggestions**: `note()` returns an optional `suggestions` block (the
+  related pages you didn't cite). Best-effort, computed pre-write, fully guarded —
+  a suggestion failure can never roll back the write.
+- **Near-duplicate warnings**: `note`/`add` surface a `warnings` entry like
+  `possible near-duplicate of [[X]] (cosine 0.91)` when a draft closely matches an
+  existing page (doc-doc cosine over the sidecar). A warning, never a block —
+  append-only + supersession invariants mean the client chooses edit/replace/append.
+
+All of it no-ops under `KB_MCP_DISABLE_EMBEDDINGS`, so the fast test suite and
+the write path's existing behaviour are unchanged when embeddings are off.
+
 ## Logs
 
 - `logs/kb-mcp.log` — application log (rotated, 5 MB × 5 files)
