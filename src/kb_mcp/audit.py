@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 ALL_CATEGORIES: tuple[str, ...] = (
     "broken_wikilink", "orphan_entity", "unprocessed_source",
     "index_drift", "tag_inconsistency", "frontmatter_compliance",
+    "unregistered_project_key", "embedding_drift",
 )
 
 # Matches [[Target]] or [[Target|Alias]]. Target may contain '/' for paths.
@@ -119,6 +120,10 @@ def audit(
         findings.extend(_check_tag_inconsistency(pages))
     if "frontmatter_compliance" in selected:
         findings.extend(_check_frontmatter_compliance(pages))
+    if "unregistered_project_key" in selected:
+        findings.extend(_check_unregistered_project_keys(vault_root, pages))
+    if "embedding_drift" in selected:
+        findings.extend(_check_embedding_drift(vault_root))
 
     summary: dict[str, int] = {}
     for f in findings:
@@ -562,6 +567,122 @@ def _check_frontmatter_compliance(
                 proposed_fix=(
                     "Rename to `projects: [<key>]` (plural list form) via "
                     "`set_frontmatter_field`."
+                ),
+            ))
+    return findings
+
+
+# ---------------- check: unregistered_project_key ----------------
+
+
+def _check_unregistered_project_keys(
+    vault_root: Path, pages: list[find_module.ParsedPage]
+) -> list[AuditFinding]:
+    """Flag frontmatter `project:` / `projects:` values not in the registry.
+
+    Catches drift that bypasses `note`/`replace`/`set_frontmatter_field`'s
+    auto-register (e.g. pre-typo-guard history, or values landed via the
+    Tier 2 `create_file` escape hatch).
+    """
+    from . import project_keys as project_keys_module
+
+    registry = project_keys_module.load_project_registry(vault_root)
+    valid = set(registry.project_to_folder.keys())
+    findings: list[AuditFinding] = []
+    for page in pages:
+        fm = page.frontmatter
+        if not isinstance(fm, dict):
+            continue
+        seen: list[tuple[str, str]] = []  # (field, key)
+        single = fm.get("project")
+        if isinstance(single, str) and single:
+            seen.append(("project", single))
+        plural = fm.get("projects")
+        if isinstance(plural, list):
+            for v in plural:
+                if isinstance(v, str) and v:
+                    seen.append(("projects", v))
+        for field, key in seen:
+            if key in valid:
+                continue
+            findings.append(AuditFinding(
+                category="unregistered_project_key",
+                severity="warn",
+                path=page.rel_path,
+                detail=(
+                    f"`{field}: {key!r}` not in _Schema/project-keys.yaml "
+                    f"registry. Drift from a pre-guard write or a Tier 2 "
+                    f"escape-hatch path."
+                ),
+                proposed_fix=(
+                    f"If {key!r} is a typo, fix the frontmatter via "
+                    f"`set_frontmatter_field` (the typo guard will surface "
+                    f"the intended key). If it's a real new key, hand-add "
+                    f"it to _Schema/project-keys.yaml."
+                ),
+            ))
+    return findings
+
+
+# ---------------- check: embedding_drift ----------------
+
+
+def _check_embedding_drift(vault_root: Path) -> list[AuditFinding]:
+    """Flag sidecar rows whose on-disk file mtime is newer than the row's mtime.
+
+    External Obsidian edits don't trigger the writer hooks, so the vector
+    sidecar drifts silently. `audit_fix(rebuild_embeddings=True)` resolves
+    all of them in one rebuild — but you want to know it's needed.
+    """
+    findings: list[AuditFinding] = []
+    sidecar = vault_root / "Knowledge Base" / ".embeddings.sqlite"
+    if not sidecar.exists():
+        return findings
+    import sqlite3
+    try:
+        conn = sqlite3.connect(sidecar)
+    except sqlite3.Error:
+        return findings
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT file_path, MAX(file_mtime) FROM chunks GROUP BY file_path"
+            ).fetchall()
+        except sqlite3.Error:
+            return findings
+    finally:
+        conn.close()
+    seen: set[str] = set()
+    for rel_path, row_mtime in rows:
+        if not isinstance(rel_path, str) or rel_path in seen:
+            continue
+        seen.add(rel_path)
+        abs_path = vault_root / rel_path
+        try:
+            disk_mtime = abs_path.stat().st_mtime
+        except OSError:
+            # File removed in vault but still in sidecar: surface that too.
+            findings.append(AuditFinding(
+                category="embedding_drift",
+                severity="info",
+                path=rel_path,
+                detail="sidecar row for file no longer on disk",
+                proposed_fix=(
+                    "Run `audit_fix(rebuild_embeddings=true)` to drop stale rows."
+                ),
+            ))
+            continue
+        if disk_mtime > (row_mtime or 0) + 1.0:  # 1s slack for FS jitter
+            findings.append(AuditFinding(
+                category="embedding_drift",
+                severity="info",
+                path=rel_path,
+                detail=(
+                    f"file mtime ({disk_mtime:.0f}) newer than sidecar "
+                    f"({(row_mtime or 0):.0f}) — likely external edit."
+                ),
+                proposed_fix=(
+                    "Run `audit_fix(rebuild_embeddings=true)` to refresh."
                 ),
             ))
     return findings

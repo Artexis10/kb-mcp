@@ -85,6 +85,12 @@ def set_frontmatter_field(
             reason="cannot set `updated:` directly — it's always bumped to today by this op",
         )
 
+    # Project-key guard: route project/projects values through the same
+    # auto-register + typo-distance check that note() uses. Without this,
+    # a typo via this surgical op silently lands in frontmatter and the
+    # registry stays clean while the page is broken.
+    _autoregister_project_keys_or_typo_block(vault_root, field, value)
+
     try:
         abs_path, rel_path = resolve_under_vault(
             vault_root, path, must_exist=True, must_be_file=True
@@ -174,6 +180,43 @@ def set_frontmatter_field(
         new_value=value,
         warnings=warnings,
     )
+
+
+def _autoregister_project_keys_or_typo_block(
+    vault_root: Path, field: str, value: Any
+) -> None:
+    """If the patched field is project/projects, validate via the registry.
+
+    Mirrors note.py's behaviour: slug-shaped new keys auto-register,
+    Levenshtein-close keys raise as PROJECT_KEY_TYPO so the agent self-
+    corrects. Non-project fields are unaffected.
+    """
+    if field not in ("project", "projects"):
+        return
+    from . import project_keys as project_keys_module
+
+    if field == "project":
+        candidates: list[str] = [value] if isinstance(value, str) and value else []
+    else:
+        candidates = [v for v in (value or []) if isinstance(v, str) and v]
+
+    if not candidates:
+        return
+
+    registry = project_keys_module.load_project_registry(vault_root)
+    for cand in candidates:
+        if cand in registry.project_to_folder:
+            continue
+        try:
+            project_keys_module.register_project_key(vault_root, cand)
+        except project_keys_module.ProjectKeyTypoError as e:
+            raise SetFrontmatterError(
+                code="PROJECT_KEY_TYPO", reason=str(e)
+            ) from e
+        except ValueError:
+            # Invalid slug — leave as-is; the frontmatter value will land
+            # but downstream audit will flag it via unregistered_project_key.
+            pass
 
 
 def _read_yaml_field(fm_text: str, field: str) -> Any:

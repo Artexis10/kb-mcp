@@ -228,6 +228,19 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 "embedding preload failed (%s); first hybrid query will "
                 "pay the cost", e,
             )
+        # Reranker is opt-in via find(rerank=True), but the first call
+        # without preload is ~30s of HF metadata + load. Preloading
+        # alongside the embedder keeps that surprise off the user.
+        try:
+            from . import embeddings
+            log.info("preloading reranker %s", embeddings.RERANKER_NAME)
+            embeddings.get_reranker()
+            log.info("reranker model ready")
+        except Exception as e:  # noqa: BLE001 — preload is best-effort
+            log.warning(
+                "reranker preload failed (%s); first rerank=True call will "
+                "pay the cost", e,
+            )
 
     auth = None
     if require_auth:

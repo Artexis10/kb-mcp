@@ -71,6 +71,35 @@ def test_rrf_dedupes_within_a_single_list() -> None:
     assert cs["b"] == pytest.approx(1 / 63)
 
 
+def test_audit_flags_embedding_drift(tmp_path) -> None:
+    """When file mtime advances past the sidecar row's mtime, audit should flag it."""
+    from kb_mcp import audit as audit_module
+    vault = tmp_path / "vault"
+    (vault / "Knowledge Base" / "_Schema").mkdir(parents=True)
+    # Minimal SKILL.md so resolve_vault wouldn't reject (we call audit directly).
+    (vault / "Knowledge Base" / "_Schema" / "SKILL.md").write_text(
+        "---\nname: knowledge-base\n---\n", encoding="utf-8"
+    )
+    page = vault / "Knowledge Base" / "Notes" / "Insights" / "probe.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        "---\ntype: insight\nstatus: active\ncreated: 2026-05-28\nupdated: 2026-05-28\ntags: []\n---\n\n# Probe\n\nbody\n",
+        encoding="utf-8",
+    )
+    # Seed the sidecar with a row whose file_mtime is in the past.
+    idx = embeddings.EmbeddingIndex(vault)
+    fake_vec = np.zeros((1, embeddings.VECTOR_DIM), dtype=np.float32)
+    idx.upsert_file(
+        "Knowledge Base/Notes/Insights/probe.md",
+        ["chunk"], fake_vec, mtime=0.0,
+    )
+    report = audit_module.audit(vault, categories=["embedding_drift"])
+    paths = [f.path for f in report.findings if f.category == "embedding_drift"]
+    assert any("probe.md" in p for p in paths), (
+        f"drift should be flagged; got findings {report.findings}"
+    )
+
+
 def test_embedding_index_sqlite_roundtrip(tmp_path) -> None:
     """Exercise the sidecar without loading the actual model — fabricated vectors."""
     vault = tmp_path / "vault"

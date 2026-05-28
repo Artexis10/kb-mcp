@@ -196,3 +196,77 @@ def test_note_surfaces_typo_as_project_key_typo_error(vault: Path) -> None:
         )
     assert exc_info.value.code == "PROJECT_KEY_TYPO"
     assert "health" in exc_info.value.reason  # suggestion present
+
+
+def test_set_frontmatter_field_blocks_project_typo(vault: Path) -> None:
+    """Patching `project` to a typo via set_frontmatter_field should raise."""
+    from kb_mcp import note as note_module
+    from kb_mcp import set_frontmatter_field as sff_module
+    # Land a note first so there's something to patch.
+    r = note_module.note(
+        vault,
+        content="# Note\n\n## Question\n\nbody",
+        note_type="research-note",
+        title="Patch probe",
+        project="health",
+        today=TODAY,
+    )
+    with pytest.raises(sff_module.SetFrontmatterError) as exc_info:
+        sff_module.set_frontmatter_field(
+            vault, path=r.path, field="project", value="helath",
+            why="testing typo guard",
+        )
+    assert exc_info.value.code == "PROJECT_KEY_TYPO"
+
+
+def test_set_frontmatter_field_autoregisters_new_project(vault: Path) -> None:
+    """Patching `project` to a genuinely new (distance ≥3) key should auto-register."""
+    from kb_mcp import note as note_module
+    from kb_mcp import project_keys as pk_module
+    from kb_mcp import set_frontmatter_field as sff_module
+    r = note_module.note(
+        vault,
+        content="# Note\n\n## Question\n\nbody",
+        note_type="research-note",
+        title="Reassign probe",
+        project="health",
+        today=TODAY,
+    )
+    sff_module.set_frontmatter_field(
+        vault, path=r.path, field="project", value="wholly-new-domain",
+        why="reassigning to a new scope",
+    )
+    reg = pk_module.load_project_registry(vault)
+    assert "wholly-new-domain" in reg.project_to_folder
+
+
+def test_audit_flags_unregistered_project_key(vault: Path) -> None:
+    """Audit's new category catches frontmatter project values not in the registry."""
+    from kb_mcp import audit as audit_module
+    from kb_mcp import create_file as cf_module
+    # Use Tier 2 create_file to bypass the auto-register path and land a
+    # frontmatter value the registry doesn't know about. Mirrors how
+    # historical/pre-guard pages could still have drift.
+    cf_module.create_file(
+        vault,
+        path="Knowledge Base/Notes/Research/Substrate/probe-drift.md",
+        content="# Probe drift\n\n## Question\n\nbody",
+        frontmatter={
+            "type": "research-note",
+            "project": "completely-unknown-key",
+            "status": "active",
+            "created": "2026-05-28",
+            "updated": "2026-05-28",
+            "tags": [],
+        },
+    )
+    report = audit_module.audit(vault, categories=["unregistered_project_key"])
+    drift_findings = [
+        f for f in report.findings
+        if f.category == "unregistered_project_key"
+        and "probe-drift" in f.path
+    ]
+    assert drift_findings, (
+        f"audit should flag the unknown project key; findings: {report.findings}"
+    )
+    assert "completely-unknown-key" in drift_findings[0].detail
