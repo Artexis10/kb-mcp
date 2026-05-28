@@ -263,6 +263,17 @@ def test_hit_signals_omitted_in_keyword(vault) -> None:
         assert "signals" not in h.as_dict()
 
 
+def test_compiled_types_include_production_log_and_experiment() -> None:
+    """production-log and experiment should boost the same as research-note etc."""
+    assert "production-log" in find_module._COMPILED_TYPES
+    assert "experiment" in find_module._COMPILED_TYPES
+    # Sanity: the multiplier helper returns the boost for both.
+    assert find_module._type_multiplier("production-log") == find_module._COMPILED_BOOST
+    assert find_module._type_multiplier("experiment") == find_module._COMPILED_BOOST
+    # Sources still get the penalty.
+    assert find_module._type_multiplier("source") == find_module._SOURCE_PENALTY
+
+
 def test_prefer_compiled_reorders_above_source(vault, source_schema) -> None:
     """Equal-scoring source vs insight should put the insight first when
     prefer_compiled=True, and either order is acceptable when False.

@@ -568,7 +568,13 @@ def _find_semantic(
 # Multipliers are small — designed as tie-breakers between similar fused
 # scores, not as dominators. Tune in one place if needed.
 _COMPILED_TYPES = frozenset(
-    {"insight", "pattern", "failure", "research-note", "entity"}
+    {
+        "insight", "pattern", "failure", "research-note", "entity",
+        # Production-logs and experiments are also Notes/-tier compiled
+        # outputs (creative-artifact knowledge / hypothesis-tested results
+        # respectively), not raw inputs. Boost them alongside their peers.
+        "production-log", "experiment",
+    }
 )
 _SOURCE_TYPES = frozenset({"source"})
 _COMPILED_BOOST = 1.15

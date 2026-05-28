@@ -104,6 +104,27 @@ def link(
     if err is not None:
         raise LinkError(code=err.code, missing=err.missing, reason=err.reason)
 
+    # Decision entities carry a `project:` field — route it through the
+    # same auto-register + typo-distance guard the other writers use.
+    # Without this, `link(entity_type="decision", project="helath")` would
+    # land a broken decision page silently.
+    if entity_type == "decision" and project:
+        from . import project_keys as project_keys_module
+        registry = project_keys_module.load_project_registry(vault_root)
+        if project not in registry.project_to_folder:
+            try:
+                project_keys_module.register_project_key(vault_root, project)
+            except project_keys_module.ProjectKeyTypoError as e:
+                raise LinkError(
+                    code="PROJECT_KEY_TYPO",
+                    missing=["project"],
+                    reason=str(e),
+                ) from e
+            except ValueError:
+                # Invalid slug — let it land; downstream audit will flag via
+                # unregistered_project_key.
+                pass
+
     today = today or dt.date.today()
     date_iso = today.isoformat()
     tags_clean = _clean_tags(tags)

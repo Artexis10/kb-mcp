@@ -240,6 +240,40 @@ def test_set_frontmatter_field_autoregisters_new_project(vault: Path) -> None:
     assert "wholly-new-domain" in reg.project_to_folder
 
 
+def test_link_decision_blocks_project_typo(vault: Path) -> None:
+    """A typo via link(entity_type='decision') should raise LinkError code=PROJECT_KEY_TYPO."""
+    from kb_mcp import link as link_module
+    with pytest.raises(link_module.LinkError) as exc_info:
+        link_module.link(
+            vault,
+            entity_type="decision",
+            name="Test Decision",
+            summary="testing typo guard via link",
+            project="helath",  # distance 1 from "health"
+            decision_status="proposed",
+            today=TODAY,
+        )
+    assert exc_info.value.code == "PROJECT_KEY_TYPO"
+    assert "health" in exc_info.value.reason
+
+
+def test_link_decision_autoregisters_new_project(vault: Path) -> None:
+    """A genuinely new project (distance ≥3) on link(decision) should auto-register."""
+    from kb_mcp import link as link_module
+    from kb_mcp import project_keys as pk_module
+    link_module.link(
+        vault,
+        entity_type="decision",
+        name="New Decision",
+        summary="testing auto-register via link",
+        project="genuinely-new-domain",
+        decision_status="proposed",
+        today=TODAY,
+    )
+    reg = pk_module.load_project_registry(vault)
+    assert "genuinely-new-domain" in reg.project_to_folder
+
+
 def test_audit_flags_unregistered_project_key(vault: Path) -> None:
     """Audit's new category catches frontmatter project values not in the registry."""
     from kb_mcp import audit as audit_module
