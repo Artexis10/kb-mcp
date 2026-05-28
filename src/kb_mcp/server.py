@@ -36,6 +36,7 @@ from . import add as add_module
 from . import append_to_file as append_to_file_module
 from . import audit as audit_module
 from . import audit_fix as audit_fix_module
+from . import compile_proposal as compile_proposal_module
 from . import corpus_aware as corpus_aware_module
 from . import create_directory as create_directory_module
 from . import create_file as create_file_module
@@ -742,6 +743,45 @@ def build_server(*, require_auth: bool) -> FastMCP:
             rebuild_embeddings=rebuild_embeddings,
         )
         return report.as_dict()
+
+    @mcp.tool
+    def propose_compilation(
+        sources: list[str],
+        suggested_title: str | None = None,
+    ) -> dict:
+        """Draft a compiled-note scaffold from unprocessed source(s). Read-only.
+
+        The backlog-drain companion to `audit`'s `unprocessed_source` findings:
+        point it at one or more raw sources and it hands back a ready-to-fill
+        note skeleton — inferred note_type, a Question/Findings/Connections (or
+        Claim/…) outline, the `sources[]` to cite, and adjacent compiled pages to
+        link (computed via the same hybrid retrieval as `suggest_links`). It
+        does NOT write anything: you fill the prose and call `note()` with the
+        returned `suggested_sources` + `suggested_connections`.
+
+        Group sources yourself before calling — pass a set that genuinely belongs
+        in one note (the audit list is aged oldest-first to help you triage).
+
+        Args:
+            sources: Vault-relative paths/wikilinks to the source(s) to compile.
+                Same path conventions as `note.sources` (brackets and the
+                leading `Knowledge Base/` are tolerated).
+            suggested_title: Optional title override; otherwise one is derived
+                from the source titles.
+
+        Returns:
+            {suggested_note_type, suggested_title, suggested_sources,
+             suggested_connections, outline_markdown, warnings}.
+
+        Errors:
+            INVALID_PROPOSE (no sources); SOURCES_NOT_FOUND (none resolved).
+        """
+        try:
+            return compile_proposal_module.propose_compilation(
+                vault_root, sources=sources, suggested_title=suggested_title
+            )
+        except compile_proposal_module.ProposeError as e:
+            raise ValueError(f"{e.code}: {e.reason}") from e
 
     @mcp.tool
     def get(path: str) -> dict:

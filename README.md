@@ -607,6 +607,26 @@ the client decides what to wire in.
 All of it no-ops under `KB_MCP_DISABLE_EMBEDDINGS`, so the fast test suite and
 the write path's existing behaviour are unchanged when embeddings are off.
 
+## Active distillation
+
+The KB grows in raw captures faster than it grows in compiled knowledge (a large
+share of sources never get distilled). Two read-only additions turn that backlog
+from an undifferentiated pile into a worked queue — without any server-side LLM:
+
+- **Aged `unprocessed_source` audit**: each finding now carries `meta`
+  (`age_days`, `age_bucket` ∈ fresh/aging/stale, `captured`), is sorted
+  **oldest-first**, and escalates to `warn` once stale. You drain the worst rot
+  first instead of guessing.
+- **`propose_compilation`** (MCP tool): point it at one or more sources and it
+  returns a ready-to-fill note scaffold — inferred `note_type`, a sectioned
+  outline (`Question/Findings/Connections` or `Claim/…`), the `sources[]` to
+  cite, and adjacent compiled pages to link (via the same retrieval as
+  `suggest_links`). It **never writes** — you fill the prose and call `note()`.
+
+Grouping (which sources belong in one note) is left to the client — that's a
+judgment call Claude makes better than a cosine threshold. Audit surfaces the
+aged list; you pick a coherent set and pass it to `propose_compilation`.
+
 ## Logs
 
 - `logs/kb-mcp.log` — application log (rotated, 5 MB × 5 files)
