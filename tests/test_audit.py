@@ -58,3 +58,72 @@ def test_audit_does_not_flag_parent_vault_wikilinks(vault: Path, tmp_path: Path)
     report = audit_module.audit(vault, categories=["broken_wikilink"])
     bad = [f for f in report.findings if "Domain - AI Systems" in f.detail]
     assert not bad, [f.as_dict() for f in bad]
+
+
+def test_audit_resolves_explicit_extension_attachment_links(vault: Path) -> None:
+    """A wikilink with an explicit non-.md extension pointing at a file that
+    exists on disk is a valid Obsidian attachment link and must not be flagged.
+
+    Regression: the resolution set was built from .md files only (and skipped
+    `_attachments/`), so `[[.../foo.pdf]]` always false-positived even when the
+    PDF was present. Mirrors Obsidian, which resolves `[[foo.pdf]]` to the file.
+    """
+    att_dir = vault / "Knowledge Base" / "Sources" / "Articles" / "_attachments"
+    att_dir.mkdir(parents=True, exist_ok=True)
+    (att_dir / "egcg-supplements.pdf").write_bytes(b"%PDF-1.4 fake\n")
+
+    insight = (
+        vault / "Knowledge Base" / "Notes" / "Insights"
+        / "progressive-disclosure-without-mode-fragmentation.md"
+    )
+    insight.write_text(
+        insight.read_text(encoding="utf-8")
+        + "\n\nReference: "
+        + "[[Knowledge Base/Sources/Articles/_attachments/egcg-supplements.pdf]]\n",
+        encoding="utf-8",
+    )
+
+    report = audit_module.audit(vault, categories=["broken_wikilink"])
+    bad = [f for f in report.findings if "egcg-supplements.pdf" in f.detail]
+    assert not bad, [f.as_dict() for f in bad]
+
+
+def test_audit_flags_missing_attachment_with_explicit_extension(vault: Path) -> None:
+    """The attachment fallback resolves only files that exist — an explicit-
+    extension link to an absent file is still a genuine broken link."""
+    insight = (
+        vault / "Knowledge Base" / "Notes" / "Insights"
+        / "progressive-disclosure-without-mode-fragmentation.md"
+    )
+    insight.write_text(
+        insight.read_text(encoding="utf-8")
+        + "\n\n[[Knowledge Base/Sources/Articles/_attachments/missing.pdf]]\n",
+        encoding="utf-8",
+    )
+
+    report = audit_module.audit(vault, categories=["broken_wikilink"])
+    bad = [f for f in report.findings if "missing.pdf" in f.detail]
+    assert bad, "expected the missing .pdf link to stay flagged"
+
+
+def test_audit_flags_extensionless_link_even_if_nonmd_file_exists(vault: Path) -> None:
+    """Extension-less wikilinks resolve only to .md notes, matching Obsidian:
+    `[[Foo]]` is broken even if `Foo.eml` exists — the link must carry the
+    extension to target the attachment. Guards against over-resolving."""
+    ev = vault / "Knowledge Base" / "Evidence" / "Scope"
+    ev.mkdir(parents=True, exist_ok=True)
+    (ev / "Formal Warning.eml").write_text("raw email", encoding="utf-8")
+
+    insight = (
+        vault / "Knowledge Base" / "Notes" / "Insights"
+        / "progressive-disclosure-without-mode-fragmentation.md"
+    )
+    insight.write_text(
+        insight.read_text(encoding="utf-8")
+        + "\n\n[[Evidence/Scope/Formal Warning]]\n",
+        encoding="utf-8",
+    )
+
+    report = audit_module.audit(vault, categories=["broken_wikilink"])
+    bad = [f for f in report.findings if "Formal Warning" in f.detail]
+    assert bad, "extension-less link to a .eml must stay flagged (Obsidian parity)"

@@ -234,6 +234,20 @@ def _check_broken_wikilinks(
                 title_matches = titles_to_paths.get(target_for_resolve.lower())
                 if title_matches and len(title_matches) == 1:
                     continue
+            # Attachment links: Obsidian resolves a wikilink carrying an
+            # explicit (non-.md) extension to the file on disk of any type
+            # (e.g. [[.../scan.pdf]], [[Domains/diagram.png]]). The resolution
+            # set above is .md-only and skips _attachments/, so such links
+            # false-positived even when the file was present. Probe the
+            # filesystem directly. Extension-less links stay note (.md) links,
+            # matching Obsidian — a bare [[Foo]] never resolves to Foo.eml.
+            suffix = Path(target_for_resolve).suffix.lower()
+            if suffix and suffix != ".md":
+                rel = target_for_resolve.lstrip("/")
+                if (vault_root / rel).exists() or (
+                    vault_root / "Knowledge Base" / normalized
+                ).exists():
+                    continue
             findings.append(AuditFinding(
                 category="broken_wikilink",
                 severity="warn",
