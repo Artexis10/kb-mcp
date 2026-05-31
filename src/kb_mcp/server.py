@@ -54,6 +54,7 @@ from . import move_file as move_file_module
 from . import note as note_module
 from . import preserve as preserve_module
 from . import query_log
+from . import reconcile as reconcile_module
 from . import recover_from_trash as recover_from_trash_module
 from . import replace as replace_module
 from . import schema
@@ -742,6 +743,44 @@ def build_server(*, require_auth: bool) -> FastMCP:
             dry_run=dry_run,
             rebuild_embeddings=rebuild_embeddings,
         )
+        return report.as_dict()
+
+    @mcp.tool
+    def reconcile(dry_run: bool = False) -> dict:
+        """Heal vault drift from out-of-band edits in one pass.
+
+        The writers keep the embedding sidecar, index.md count rows, and log.md
+        current on every write. But editing the vault directly — in Obsidian,
+        on mobile, or via a manual filesystem edit — bypasses those hooks, so
+        the sidecar and the counts drift silently. `reconcile` is the
+        first-class "I edited around the system, fix it" command:
+
+        1. Index counts — recompute Sources/Notes/Entities count rows from
+           on-disk reality and rewrite any that drifted (curated descriptions
+           and Recent-activity are preserved; only count tokens move).
+        2. Embeddings — incrementally re-embed only the *stale* files (those
+           `embedding_drift` flags: on-disk mtime newer than the sidecar row),
+           via the same path the writers use. Cheaper than
+           `audit_fix(rebuild_embeddings=true)`'s full wipe-and-rebuild.
+        3. Drift report — re-run index_drift + embedding_drift, return what
+           remains.
+
+        Narrower than `audit_fix`: it does NOT canonicalize wikilinks or
+        backfill frontmatter (those are content rewrites you opt into).
+        Idempotent; `dry_run=true` reports without writing.
+
+        Args:
+            dry_run: If true, compute what would change without writing.
+                Default false.
+
+        Returns:
+            {indexes_updated: [<index path>, ...],
+             embeddings_refreshed: int,
+             embeddings_status: "current" | "refreshed" | "disabled",
+             remaining_drift: [<audit findings>],
+             dry_run: bool}
+        """
+        report = reconcile_module.reconcile(vault_root, dry_run=dry_run)
         return report.as_dict()
 
     @mcp.tool
