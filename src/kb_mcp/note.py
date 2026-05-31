@@ -42,6 +42,7 @@ from .vault import (
     PlannedWrite,
     WikilinkResolver,
     batch_atomic_write,
+    escape_wikilinks_for_log,
     find_body_wikilinks,
     kb_root,
     normalize_body_wikilinks,
@@ -871,7 +872,7 @@ def _prepend_log_entry(
     """Insert `## [<date>] <verb> | <kb-relative-path>` entry just after the
     log's `---` separator (newest entries at top)."""
     title = rel_path.replace("Knowledge Base/", "", 1)
-    new_entry = f"## [{date_iso}] {verb} | {title}\n\n{body}\n"
+    new_entry = f"## [{date_iso}] {verb} | {title}\n\n{escape_wikilinks_for_log(body)}\n"
     sep_idx = text.find(indexes.LOG_SEPARATOR)
     if sep_idx == -1:
         return text.rstrip() + "\n\n" + new_entry + "\n"

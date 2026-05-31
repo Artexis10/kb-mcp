@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .vault import PlannedWrite, kb_root
+from .vault import PlannedWrite, escape_wikilinks_for_log, kb_root
 
 
 RECENT_ACTIVITY_CAP = 50
@@ -645,7 +645,7 @@ def _update_log(
 ) -> str:
     """Prepend `## [<date>] add | <path>` entry right after the `---` separator."""
     title = rel_source_path.replace("Knowledge Base/", "", 1)
-    new_entry = f"## [{date_iso}] add | {title}\n\n{log_entry_body}\n"
+    new_entry = f"## [{date_iso}] add | {title}\n\n{escape_wikilinks_for_log(log_entry_body)}\n"
 
     sep_idx = text.find(LOG_SEPARATOR)
     if sep_idx == -1:

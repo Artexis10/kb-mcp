@@ -43,6 +43,7 @@ from .vault import (
     PlannedWrite,
     WikilinkResolver,
     batch_atomic_write,
+    escape_wikilinks_for_log,
     kb_root,
     normalize_body_wikilinks,
 )
@@ -322,7 +323,7 @@ def _prepend_log_entry(
     text: str, *, date_iso: str, rel_no_ext: str, body: str
 ) -> str:
     title = rel_no_ext.replace("Knowledge Base/", "", 1)
-    new_entry = f"## [{date_iso}] edit | {title}\n\n{body}\n"
+    new_entry = f"## [{date_iso}] edit | {title}\n\n{escape_wikilinks_for_log(body)}\n"
     sep_idx = text.find(indexes.LOG_SEPARATOR)
     if sep_idx == -1:
         return text.rstrip() + "\n\n" + new_entry + "\n"

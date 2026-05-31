@@ -774,6 +774,21 @@ def normalize_body_wikilinks(
 # ---------------- log helpers ----------------
 
 
+_LOG_WIKILINK_RE = re.compile(r"!?\[\[(.+?)\]\]")
+
+
+def escape_wikilinks_for_log(text: str) -> str:
+    """Neutralize wikilink syntax in free text bound for log.md.
+
+    Rationale strings (`why`, descriptions) are interpolated verbatim into
+    log.md entries. A literal `[[target]]` there becomes a live wikilink the
+    broken_wikilink audit then re-flags — a self-inflicted drift class. Render
+    any `[[...]]` / `![[...]]` as backticked code so it stays inert while the
+    referenced text is preserved.
+    """
+    return _LOG_WIKILINK_RE.sub(lambda m: f"`{m.group(1)}`", text)
+
+
 def prepend_log_entry(
     log_text: str,
     *,
@@ -792,7 +807,7 @@ def prepend_log_entry(
     title = rel_path_no_ext
     if title.startswith("Knowledge Base/"):
         title = title[len("Knowledge Base/"):]
-    new_entry = f"## [{date_iso}] {op} | {title}\n\n{body}\n"
+    new_entry = f"## [{date_iso}] {op} | {title}\n\n{escape_wikilinks_for_log(body)}\n"
     # Reuse the same separator the indexes module emits.
     separator = "\n---\n"
     sep_idx = log_text.find(separator)

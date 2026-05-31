@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import indexes
-from .vault import PlannedWrite, batch_atomic_write, kb_root
+from .vault import PlannedWrite, batch_atomic_write, escape_wikilinks_for_log, kb_root
 
 
 log = logging.getLogger(__name__)
@@ -314,7 +314,7 @@ def _prepend_log_entry(
 ) -> str:
     """Insert `## [<date>] preserve | <kb-relative-path>` after the `---` separator."""
     title = rel_path.replace("Knowledge Base/", "", 1)
-    new_entry = f"## [{date_iso}] preserve | {title}\n\n{body}\n"
+    new_entry = f"## [{date_iso}] preserve | {title}\n\n{escape_wikilinks_for_log(body)}\n"
     sep_idx = text.find(indexes.LOG_SEPARATOR)
     if sep_idx == -1:
         return text.rstrip() + "\n\n" + new_entry + "\n"
