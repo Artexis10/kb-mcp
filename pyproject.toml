@@ -5,7 +5,7 @@ description = "Self-hosted MCP server exposing Hugo's Obsidian Knowledge Base to
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
-authors = [{ name = "Hugo Anderson", email = "hugoander@gmail.com" }]
+authors = [{ name = "Hugo Ander", email = "hugoander@gmail.com" }]
 
 dependencies = [
     "fastmcp>=2.10",

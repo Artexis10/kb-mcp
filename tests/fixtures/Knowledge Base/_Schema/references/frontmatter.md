@@ -31,7 +31,7 @@ These appear on every page type:
 | Field | Required | Notes |
 |---|---|---|
 | `project` | yes | one of: `substrate`, `q`, `endstate`, `sift`, `tu`, `book-club`, `health`, `finance`, `creative`, `science`, `travel`, `personal` |
-| `tenant` | optional | for Q tenants only — current values: `ask-dr-chaffee`, `tu`. See SKILL.md § Q tenants for the dual role of `tu`. |
+| `tenant` | optional | for Q tenants only — current values: `example-tenant`, `tu`. See SKILL.md § Q tenants for the dual role of `tu`. |
 | `sources` | yes | list of wikilinks to `Sources/` files this note draws from |
 | `supersedes` | optional | wikilink to the page this one replaces |
 | `superseded_by` | optional | wikilink to the page that replaced this one (set when status flips to `superseded`) |
@@ -130,7 +130,7 @@ This format is Obsidian-compatible and survives Dataview queries.
 ---
 type: research-note
 project: q
-tenant: ask-dr-chaffee
+tenant: example-tenant
 status: active
 created: 2026-05-09
 updated: 2026-05-12

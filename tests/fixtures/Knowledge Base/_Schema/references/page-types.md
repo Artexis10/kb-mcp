@@ -49,7 +49,7 @@ For long sources, it's fine to capture an excerpt + URL rather than full text. F
 ---
 type: research-note
 project: q
-tenant: ask-dr-chaffee
+tenant: example-tenant
 status: active
 created: 2026-05-09
 updated: 2026-05-09

@@ -246,7 +246,7 @@ If you find yourself wanting a scope that isn't on this list, surface it and ask
 
 Q is a multi-tenant platform. When research is about a specific Q tenant, set `project: q` and add `tenant: <key>`. Current tenants:
 
-- `ask-dr-chaffee` — Dr. Chaffee's knowledge platform
+- `example-tenant` — an example client's knowledge platform
 - `tu` — Together, Unprocessed (the TU podcast also runs on Q)
 
 **Disambiguating `tu`:** the same key `tu` is used both as a top-level project (when research is about the podcast as content/activity — episodes, guests, audience, narrative) and as a Q tenant key (when research is about TU's deployment on the Q platform — infrastructure, configuration, integrations). Disambiguate by the `project` field:
