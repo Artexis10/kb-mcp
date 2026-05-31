@@ -23,10 +23,14 @@ existing write tools (no auto-fix).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 from . import find as find_module
 from . import indexes
@@ -43,8 +47,15 @@ log = logging.getLogger(__name__)
 ALL_CATEGORIES: tuple[str, ...] = (
     "broken_wikilink", "orphan_entity", "unprocessed_source",
     "index_drift", "tag_inconsistency", "frontmatter_compliance",
-    "unregistered_project_key", "embedding_drift",
+    "unregistered_project_key", "embedding_drift", "relevance_pairs_pending",
 )
+
+# Repo-global feedback-loop logs (written by the running service) + the golden
+# query set, used by the relevance_pairs_pending check. Module-level so tests
+# can monkeypatch them to point at an isolated fixture.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_RELEVANCE_LOGS_DIR = _REPO_ROOT / "logs"
+_RELEVANCE_GOLDEN = _REPO_ROOT / "tests" / "golden" / "queries.yaml"
 
 # Matches [[Target]] or [[Target|Alias]]. Target may contain '/' for paths.
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]\|\n]+?)(?:\|[^\]\n]*)?\]\]")
@@ -145,6 +156,8 @@ def audit(
         findings.extend(_check_unregistered_project_keys(vault_root, pages))
     if "embedding_drift" in selected:
         findings.extend(_check_embedding_drift(vault_root))
+    if "relevance_pairs_pending" in selected:
+        findings.extend(_check_relevance_pairs_pending())
 
     summary: dict[str, int] = {}
     for f in findings:
@@ -791,6 +804,126 @@ def _check_embedding_drift(vault_root: Path) -> list[AuditFinding]:
                 ),
             ))
     return findings
+
+
+# ---------------- check: relevance_pairs_pending ----------------
+
+
+def _relevance_canon(path: str) -> str:
+    p = (path or "").strip().replace("\\", "/")
+    if p.lower().endswith(".md"):
+        p = p[:-3]
+    if p.startswith("Knowledge Base/"):
+        p = p[len("Knowledge Base/"):]
+    return p.lower()
+
+
+def _relevance_read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _relevance_golden_queries(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    except yaml.YAMLError:
+        return set()
+    return {
+        e["query"].strip().lower()
+        for e in raw
+        if isinstance(e, dict) and e.get("query")
+    }
+
+
+def _check_relevance_pairs_pending(
+    *,
+    logs_dir: Path | None = None,
+    golden_path: Path | None = None,
+    window_seconds: float = 7200.0,
+) -> list[AuditFinding]:
+    """Surface real-usage (query -> cited_path) relevance signal not yet in the
+    golden set — the retrieval feedback loop's unconfirmed backlog.
+
+    A note/replace write that cites a path shortly after a find() which surfaced
+    that path is a weak (query -> path) relevance label (see
+    `scripts/derive_relevance_pairs.py`). When such a query isn't yet in
+    `tests/golden/queries.yaml`, ranking has measurable signal nobody has
+    confirmed. Pure log-join (model-free), so it's safe to run inside audit.
+
+    Gated by `KB_MCP_DISABLE_RELEVANCE_CHECK` (set by the test suite) so the
+    per-vault audit stays deterministic regardless of the repo-global logs.
+    """
+    if os.environ.get("KB_MCP_DISABLE_RELEVANCE_CHECK"):
+        return []
+    logs_dir = logs_dir or _RELEVANCE_LOGS_DIR
+    golden_path = golden_path or _RELEVANCE_GOLDEN
+
+    queries = _relevance_read_jsonl(logs_dir / "queries.jsonl")
+    writes = _relevance_read_jsonl(logs_dir / "writes.jsonl")
+    if not queries or not writes:
+        return []
+
+    existing = _relevance_golden_queries(golden_path)
+    new_queries: set[str] = set()
+    pairs_in_window = 0
+    for w in writes:
+        if w.get("tool") not in ("note", "replace"):
+            continue
+        try:
+            w_ts = dt.datetime.fromisoformat(w.get("ts", ""))
+        except (ValueError, TypeError):
+            continue
+        cited = {_relevance_canon(c) for c in (w.get("cited_sources") or []) if c}
+        if not cited:
+            continue
+        for q in queries:
+            try:
+                q_ts = dt.datetime.fromisoformat(q.get("ts", ""))
+            except (ValueError, TypeError):
+                continue
+            delta = (w_ts - q_ts).total_seconds()
+            if not (0 <= delta <= window_seconds):
+                continue
+            ranked = {
+                _relevance_canon(t.get("path", ""))
+                for t in (q.get("top_k") or [])
+                if t.get("path")
+            }
+            if cited & ranked:
+                pairs_in_window += 1
+                ql = (q.get("query") or "").strip()
+                if ql and ql.lower() not in existing:
+                    new_queries.add(ql)
+
+    if not new_queries:
+        return []
+    return [AuditFinding(
+        category="relevance_pairs_pending",
+        severity="info",
+        path="logs/queries.jsonl",
+        detail=(
+            f"{len(new_queries)} query/result pair(s) from real usage are not in "
+            "the golden set yet — unconfirmed retrieval feedback signal."
+        ),
+        proposed_fix=(
+            "Run `python scripts/derive_relevance_pairs.py` to review the "
+            "proposed (query -> cited_path) labels, paste confirmed ones into "
+            "tests/golden/queries.yaml, then re-run `scripts/eval_retrieval.py`."
+        ),
+        meta={"new_queries": len(new_queries), "pairs_in_window": pairs_in_window},
+    )]
 
 
 # ---------------- helpers ----------------

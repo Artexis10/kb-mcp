@@ -23,6 +23,7 @@ def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     delete this env var via their own monkeypatch.
     """
     monkeypatch.setenv("KB_MCP_DISABLE_EMBEDDINGS", "1")
+    monkeypatch.setenv("KB_MCP_DISABLE_RELEVANCE_CHECK", "1")
 
 
 @pytest.fixture
