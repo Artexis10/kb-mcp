@@ -863,20 +863,38 @@ def build_server(*, require_auth: bool) -> FastMCP:
         why: str,
         new_body: str | None = None,
         tags: list[str] | None = None,
+        old_string: str | None = None,
+        new_string: str | None = None,
+        replace_all: bool = False,
     ) -> dict:
-        """Lightweight in-place edit of a page (body and/or tags).
+        """Lightweight in-place edit of a page (body, tags, or a surgical snippet).
 
-        For tweaks — typo fixes, sentence additions, tag corrections —
-        without going through full supersession via `replace`. Use `replace`
-        for substantial rewrites; use `edit` when creating a new file +
-        superseded-link chain would be silly for what you're changing.
+        For tweaks — typo fixes, filling a row, appending one line, tag
+        corrections — without going through full supersession via `replace`.
+        Use `replace` for substantial rewrites; use `edit` when creating a new
+        file + superseded-link chain would be silly for what you're changing.
 
-        What changes:
-        - `new_body` (if provided) replaces the markdown body.
-        - `tags` (if provided) replaces the `tags:` frontmatter field.
-        - `updated:` is always bumped to today.
+        Three (composable) modes:
+        - `new_body` — replace the WHOLE body. Heavyweight; you re-send
+          everything after the frontmatter.
+        - `tags` — replace the `tags:` frontmatter field.
+        - `old_string`/`new_string` — **surgical** string-replace inside the
+          body. Token-cheap: send only the changed snippet, not the whole
+          page. Ideal for filling a `[take: ]` row or appending one opinion
+          (replace a section heading with itself + the new line). `updated:`
+          is always bumped to today.
 
-        What stays:
+        Surgical-mode rules (mirrors a precise find-and-replace):
+        - `old_string` must match the file EXACTLY, including whitespace.
+        - By default it must occur exactly once — an ambiguous match is an
+          error (AMBIGUOUS_MATCH) so you never edit the wrong row. Pass
+          `replace_all=True` to replace every occurrence.
+        - Cannot be combined with `new_body` (both rewrite the body); may be
+          paired with `tags`.
+        - Only the inserted snippet gets wikilink-normalized; the rest of the
+          body is left byte-for-byte untouched.
+
+        What stays in all modes:
         - All other frontmatter fields (type, project, status, sources,
           superseded_by, etc.). If you need to change those, use `replace`.
 
@@ -900,13 +918,20 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 Omit to keep the existing body.
             tags: New tags list (replaces existing). Lowercase dash-
                 separated; the server normalizes. Omit to keep existing tags.
+            old_string: Exact snippet to find in the body (surgical mode).
+            new_string: Replacement snippet (required with old_string; must
+                differ from it).
+            replace_all: Replace every occurrence instead of requiring a
+                unique match. Default False.
 
         Returns:
             {path, warnings}.
 
         Errors:
-            INVALID_EDIT (missing required, both new_body and tags omitted,
-            path in Sources/Evidence); NOT_FOUND; ALREADY_SUPERSEDED;
+            INVALID_EDIT (nothing to edit, old_string+new_body both given,
+            new_string missing/equal, path in Sources/Evidence); NOT_FOUND;
+            STRING_NOT_FOUND (surgical snippet absent); AMBIGUOUS_MATCH
+            (snippet not unique and replace_all=False); ALREADY_SUPERSEDED;
             UNREADABLE.
         """
         try:
@@ -916,6 +941,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 why=why,
                 new_body=new_body,
                 tags=tags,
+                old_string=old_string,
+                new_string=new_string,
+                replace_all=replace_all,
             )
         except edit_module.EditError as e:
             raise ValueError(

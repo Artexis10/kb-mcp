@@ -78,20 +78,51 @@ def edit(
     why: str,
     new_body: str | None = None,
     tags: list[str] | None = None,
+    old_string: str | None = None,
+    new_string: str | None = None,
+    replace_all: bool = False,
     today: dt.date | None = None,
 ) -> EditResult:
-    """Edit body and/or tags of a compiled page in place. Bumps `updated:`.
+    """Edit a compiled page in place. Bumps `updated:`.
+
+    Three (composable) modes:
+    - `new_body` — replace the whole body. The heavyweight mode.
+    - `tags` — replace the `tags:` frontmatter list.
+    - `old_string`/`new_string` — **surgical** string-replace inside the body.
+      Token-cheap: the caller sends only the changed snippet instead of the
+      whole body. By default `old_string` must occur exactly once (an
+      ambiguous match is an error so you never edit the wrong row); pass
+      `replace_all=True` to replace every occurrence. Surgical mode cannot be
+      combined with `new_body` (they both rewrite the body), but may be paired
+      with `tags`.
 
     `why` is required — it lands in the log entry so the change is auditable.
     """
     missing: list[str] = []
     reasons: list[str] = []
 
-    if new_body is None and tags is None:
-        missing.append("new_body or tags")
+    surgical = old_string is not None
+
+    if surgical and new_body is not None:
+        missing.append("old_string/new_body")
         reasons.append(
-            "must supply at least one of `new_body` or `tags`; otherwise "
-            "there's nothing to edit"
+            "surgical mode (`old_string`) and whole-body mode (`new_body`) both "
+            "rewrite the body — supply one or the other, not both"
+        )
+    if surgical and new_string is None:
+        missing.append("new_string")
+        reasons.append("`new_string` is required when `old_string` is given")
+    if surgical and new_string is not None and new_string == old_string:
+        missing.append("new_string")
+        reasons.append("`new_string` equals `old_string` — that's a no-op edit")
+    if not surgical and new_string is not None:
+        missing.append("old_string")
+        reasons.append("`new_string` given without `old_string` — nothing to match")
+    if new_body is None and tags is None and not surgical:
+        missing.append("new_body, tags, or old_string")
+        reasons.append(
+            "must supply at least one of `new_body`, `tags`, or "
+            "`old_string`/`new_string`; otherwise there's nothing to edit"
         )
     if not why or not why.strip():
         missing.append("why")
@@ -167,18 +198,52 @@ def edit(
         else:
             fm_text = fm_text.rstrip() + "\ntags: []"
 
-    # Replace body if provided; otherwise keep original body.
-    new_body_final = new_body if new_body is not None else body
-
-    # Normalize wikilinks in the body to canonical full form when caller
-    # supplied a new body. Existing body is left alone to preserve user-intended
-    # legacy forms in untouched files (Phase 5 cleanup handles vault-wide).
+    # Resolve the new body across the three modes.
     body_warnings: list[str] = []
-    if new_body is not None:
+    body_changed = False
+
+    if surgical:
+        # old_string/new_string are not None here (validated above).
+        count = body.count(old_string)  # type: ignore[arg-type]
+        if count == 0:
+            raise EditError(
+                code="STRING_NOT_FOUND",
+                missing=["old_string"],
+                reason=(
+                    f"`old_string` not found in {rel_path}. It must match the "
+                    "file exactly, including whitespace. Read the page (or the "
+                    "section) first to copy the snippet verbatim."
+                ),
+            )
+        if count > 1 and not replace_all:
+            raise EditError(
+                code="AMBIGUOUS_MATCH",
+                missing=["old_string"],
+                reason=(
+                    f"`old_string` occurs {count}× in {rel_path}; refusing to "
+                    "guess which. Add surrounding context to make it unique, or "
+                    "pass replace_all=True to replace every occurrence."
+                ),
+            )
+        # Normalize wikilinks only in the inserted snippet — the rest of the
+        # body is left byte-for-byte untouched (no incidental legacy rewrites).
+        resolver = WikilinkResolver(vault_root)
+        new_string_norm, body_warnings = normalize_body_wikilinks(
+            new_string, vault_root, resolver=resolver  # type: ignore[arg-type]
+        )
+        n = -1 if replace_all else 1
+        new_body_final = body.replace(old_string, new_string_norm, n)  # type: ignore[arg-type]
+        body_changed = True
+    elif new_body is not None:
+        # Normalize wikilinks to canonical full form. Existing body is left
+        # alone to preserve user-intended legacy forms in untouched files.
         resolver = WikilinkResolver(vault_root)
         new_body_final, body_warnings = normalize_body_wikilinks(
-            new_body_final, vault_root, resolver=resolver
+            new_body, vault_root, resolver=resolver
         )
+        body_changed = True
+    else:
+        new_body_final = body
 
     # Normalize trailing newline so we don't accumulate blanks across edits.
     new_body_final = new_body_final.rstrip() + "\n"
@@ -209,8 +274,8 @@ def edit(
             f"Edit via kb-mcp. {why.strip()}"
         ]
         changed: list[str] = []
-        if new_body is not None:
-            changed.append("body")
+        if body_changed:
+            changed.append("body (surgical)" if surgical else "body")
         if tags is not None:
             changed.append("tags")
         if changed:

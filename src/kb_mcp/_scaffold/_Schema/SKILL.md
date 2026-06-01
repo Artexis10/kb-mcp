@@ -2,7 +2,7 @@
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
 metadata:
-  version: 0.11.0
+  version: 0.12.0
 ---
 
 # Knowledge Base
@@ -77,7 +77,7 @@ These encode the KB's discipline: filenames, folders, frontmatter, supersession,
 | **note** | Compile a structured note from raw input or thinking | `Notes/<type>/` |
 | **link** | Create or update an entity, wire backlinks | `Entities/<type>/` |
 | **preserve** | Capture a binary / factual artifact for an incident scope | `Evidence/<scope>/` |
-| **edit** | Lightweight in-place edit of a compiled page (body or tags). Bumps `updated:` | the page |
+| **edit** | Lightweight in-place edit of a compiled page (whole body, tags, or a surgical `old_string`→`new_string` snippet replace — token-cheap for filling a row or appending one line). Bumps `updated:` | the page |
 | **find** | Type-aware search across the KB (read-only) | — |
 | **suggest_links** | Surface existing pages a draft or page should link to, hub-aware (read-only) | — |
 | **get** | Read a full file by path (any tree under vault root). Read-only | — |
