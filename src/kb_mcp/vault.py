@@ -8,6 +8,7 @@ list_directory, etc.).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -87,6 +88,17 @@ def _is_vault(path: Path) -> bool:
 
 def kb_root(vault: Path) -> Path:
     return vault / "Knowledge Base"
+
+
+def content_hash(content: str) -> str:
+    """sha256 hex of a file's full raw text — the drift-guard token.
+
+    Hashing the WHOLE content (frontmatter + body) means a concurrent
+    `tags:`/`status:` change trips the guard too, not just body edits.
+    `get` returns this; a writer echoes it back via `edit(expected_hash=...)`
+    so a stale read can't silently clobber another writer's change.
+    """
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def slugify_title(title: str, max_length: int = SLUG_MAX_LENGTH) -> str:

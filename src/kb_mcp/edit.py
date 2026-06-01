@@ -43,6 +43,7 @@ from .vault import (
     PlannedWrite,
     WikilinkResolver,
     batch_atomic_write,
+    content_hash,
     escape_wikilinks_for_log,
     kb_root,
     normalize_body_wikilinks,
@@ -59,6 +60,26 @@ class EditResult:
 
     def as_dict(self) -> dict:
         return {"path": self.path, "warnings": self.warnings}
+
+
+@dataclass
+class EditValidation:
+    """Preview returned by `edit(validate_only=True)` — no write performed."""
+
+    path: str            # vault-relative, with .md
+    validate_only: bool  # always True
+    mode: str            # "surgical"
+    match_count: int     # occurrences of old_string in the body
+    matches: list[str]   # the line(s) around each occurrence (capped)
+
+    def as_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "validate_only": self.validate_only,
+            "mode": self.mode,
+            "match_count": self.match_count,
+            "matches": self.matches,
+        }
 
 
 @dataclass
@@ -81,8 +102,10 @@ def edit(
     old_string: str | None = None,
     new_string: str | None = None,
     replace_all: bool = False,
+    expected_hash: str | None = None,
+    validate_only: bool = False,
     today: dt.date | None = None,
-) -> EditResult:
+) -> EditResult | EditValidation:
     """Edit a compiled page in place. Bumps `updated:`.
 
     Three (composable) modes:
@@ -127,6 +150,12 @@ def edit(
     if not why or not why.strip():
         missing.append("why")
         reasons.append("why is required — edits without rationale aren't auditable")
+    if validate_only and not surgical:
+        missing.append("old_string")
+        reasons.append(
+            "validate_only previews a surgical match — it needs `old_string` "
+            "(there's nothing to preview for whole-body or tags edits)"
+        )
 
     if missing:
         raise EditError(
@@ -136,6 +165,137 @@ def edit(
     today = today or dt.date.today()
     date_iso = today.isoformat()
 
+    editable = load_editable(vault_root, path, expected_hash=expected_hash)
+    abs_path = editable.abs_path
+    rel_path = editable.rel_path
+    fm_text = editable.fm_text
+    body = editable.body
+
+    # Patch updated: (always).
+    fm_text = _set_or_append(fm_text, "updated", date_iso)
+
+    # Patch tags: if provided.
+    if tags is not None:
+        tags_clean = _clean_tags(tags)
+        fm_text = _remove_yaml_key(fm_text, "tags")
+        if tags_clean:
+            fm_text = fm_text.rstrip() + f"\ntags: [" + ", ".join(tags_clean) + "]"
+        else:
+            fm_text = fm_text.rstrip() + "\ntags: []"
+
+    # Resolve the new body across the three modes.
+    body_warnings: list[str] = []
+    body_changed = False
+
+    if surgical:
+        # old_string/new_string are not None here (validated above).
+        if validate_only:
+            # Preview only — report the count (don't raise on 0 or >1; seeing
+            # the count is the whole point) and write nothing.
+            return EditValidation(
+                path=rel_path,
+                validate_only=True,
+                mode="surgical",
+                match_count=body.count(old_string),  # type: ignore[arg-type]
+                matches=_match_contexts(body, old_string),  # type: ignore[arg-type]
+            )
+        new_body_final, body_warnings = apply_surgical_replace(
+            body,
+            old_string,  # type: ignore[arg-type]
+            new_string,  # type: ignore[arg-type]
+            replace_all,
+            vault_root,
+            rel_path=rel_path,
+        )
+        body_changed = True
+    elif new_body is not None:
+        # Normalize wikilinks to canonical full form. Existing body is left
+        # alone to preserve user-intended legacy forms in untouched files.
+        resolver = WikilinkResolver(vault_root)
+        new_body_final, body_warnings = normalize_body_wikilinks(
+            new_body, vault_root, resolver=resolver
+        )
+        body_changed = True
+    else:
+        new_body_final = body
+
+    # Normalize trailing newline so we don't accumulate blanks across edits.
+    new_body_final = new_body_final.rstrip() + "\n"
+    new_text = f"---\n{fm_text}\n---\n{new_body_final}"
+
+    changed: list[str] = []
+    if body_changed:
+        changed.append("body (surgical)" if surgical else "body")
+    if tags is not None:
+        changed.append("tags")
+
+    warnings = commit_edit(
+        vault_root,
+        abs_path=abs_path,
+        rel_path=rel_path,
+        new_text=new_text,
+        date_iso=date_iso,
+        why=why,
+        changed=changed,
+        extra_warnings=body_warnings,
+    )
+    return EditResult(path=rel_path, warnings=warnings)
+
+
+# ---------------- path resolution ----------------
+
+
+def _resolve(vault_root: Path, path: str) -> tuple[Path, str]:
+    if not path or not path.strip():
+        raise EditError(code="INVALID_PATH", missing=["path"], reason="path is empty")
+    rel = path.strip().replace("\\", "/").lstrip("/")
+    if not rel.startswith("Knowledge Base/"):
+        rel = "Knowledge Base/" + rel
+    if not rel.endswith(".md"):
+        rel = rel + ".md"
+    candidate = vault_root / rel
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(kb_root(vault_root).resolve())
+    except (ValueError, OSError) as e:
+        raise EditError(
+            code="INVALID_PATH",
+            missing=["path"],
+            reason=f"path escapes Knowledge Base/: {e}",
+        ) from None
+    if not candidate.exists():
+        raise EditError(
+            code="NOT_FOUND",
+            missing=["path"],
+            reason=f"file does not exist: {rel}",
+        )
+    return candidate, rel
+
+
+# ---------------- shared load / apply / commit (edit + multi_edit) ----------------
+
+
+@dataclass
+class _Editable:
+    """A page resolved + guarded for in-place editing, split into parts."""
+
+    abs_path: Path
+    rel_path: str
+    original_text: str
+    fm_text: str
+    body: str
+
+
+def load_editable(
+    vault_root: Path, path: str, *, expected_hash: str | None = None
+) -> _Editable:
+    """Resolve + guard a page for in-place editing, returning its split parts.
+
+    Runs every safety gate, in the exact order `edit` used inline: append-only
+    refusal (Sources/Evidence), NOT_FOUND, superseded refusal, the optimistic-
+    concurrency `expected_hash` guard, and the frontmatter-required check.
+    Shared by `edit` and `multi_edit`.
+    """
     abs_path, rel_path = _resolve(vault_root, path)
 
     if "/Sources/" in "/" + rel_path or "/Evidence/" in "/" + rel_path:
@@ -173,6 +333,22 @@ def edit(
         )
 
     original_text = abs_path.read_text(encoding="utf-8")
+
+    # Optimistic-concurrency guard. If the caller passed the hash it read via
+    # `get`, refuse when the file changed on disk since — don't clobber another
+    # writer. Checked before any mutation; the `updated:` bump happens after
+    # this read, so it never self-trips.
+    if expected_hash is not None and content_hash(original_text) != expected_hash:
+        raise EditError(
+            code="STALE_EDIT",
+            missing=["expected_hash"],
+            reason=(
+                f"{rel_path} changed on disk since you read it "
+                "(expected_hash mismatch). Re-read the page with `get` and "
+                "retry the edit against the current content."
+            ),
+        )
+
     fm_match = _FM_PATTERN.match(original_text)
     if not fm_match:
         raise EditError(
@@ -183,81 +359,92 @@ def edit(
                 "synthesize them."
             ),
         )
-    fm_text = fm_match.group(1)
-    body = fm_match.group(2)
+    return _Editable(
+        abs_path=abs_path,
+        rel_path=rel_path,
+        original_text=original_text,
+        fm_text=fm_match.group(1),
+        body=fm_match.group(2),
+    )
 
-    # Patch updated: (always).
-    fm_text = _set_or_append(fm_text, "updated", date_iso)
 
-    # Patch tags: if provided.
-    if tags is not None:
-        tags_clean = _clean_tags(tags)
-        fm_text = _remove_yaml_key(fm_text, "tags")
-        if tags_clean:
-            fm_text = fm_text.rstrip() + f"\ntags: [" + ", ".join(tags_clean) + "]"
-        else:
-            fm_text = fm_text.rstrip() + "\ntags: []"
+def apply_surgical_replace(
+    body: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+    vault_root: Path,
+    *,
+    rel_path: str = "",
+    resolver: WikilinkResolver | None = None,
+    pair_index: int | None = None,
+) -> tuple[str, list[str]]:
+    """Count, validate, and apply one surgical replace → (new_body, warnings).
 
-    # Resolve the new body across the three modes.
-    body_warnings: list[str] = []
-    body_changed = False
-
-    if surgical:
-        # old_string/new_string are not None here (validated above).
-        count = body.count(old_string)  # type: ignore[arg-type]
-        if count == 0:
-            raise EditError(
-                code="STRING_NOT_FOUND",
-                missing=["old_string"],
-                reason=(
-                    f"`old_string` not found in {rel_path}. It must match the "
-                    "file exactly, including whitespace. Read the page (or the "
-                    "section) first to copy the snippet verbatim."
-                ),
-            )
-        if count > 1 and not replace_all:
-            raise EditError(
-                code="AMBIGUOUS_MATCH",
-                missing=["old_string"],
-                reason=(
-                    f"`old_string` occurs {count}× in {rel_path}; refusing to "
-                    "guess which. Add surrounding context to make it unique, or "
-                    "pass replace_all=True to replace every occurrence."
-                ),
-            )
-        # Normalize wikilinks only in the inserted snippet — the rest of the
-        # body is left byte-for-byte untouched (no incidental legacy rewrites).
-        resolver = WikilinkResolver(vault_root)
-        new_string_norm, body_warnings = normalize_body_wikilinks(
-            new_string, vault_root, resolver=resolver  # type: ignore[arg-type]
+    Raises EditError (STRING_NOT_FOUND / AMBIGUOUS_MATCH) exactly as `edit`'s
+    inline surgical mode did. `pair_index` is woven into messages when called
+    from `multi_edit` so a failing pair is identifiable. Pass a shared
+    `resolver` to avoid rebuilding the wikilink index per pair.
+    """
+    where = f" in {rel_path}" if rel_path else ""
+    which = f" (edit #{pair_index})" if pair_index is not None else ""
+    count = body.count(old_string)
+    if count == 0:
+        raise EditError(
+            code="STRING_NOT_FOUND",
+            missing=["old_string"],
+            reason=(
+                f"`old_string` not found{where}{which}. It must match the file "
+                "exactly, including whitespace. Read the page (or the section) "
+                "first to copy the snippet verbatim."
+            ),
         )
-        n = -1 if replace_all else 1
-        new_body_final = body.replace(old_string, new_string_norm, n)  # type: ignore[arg-type]
-        body_changed = True
-    elif new_body is not None:
-        # Normalize wikilinks to canonical full form. Existing body is left
-        # alone to preserve user-intended legacy forms in untouched files.
-        resolver = WikilinkResolver(vault_root)
-        new_body_final, body_warnings = normalize_body_wikilinks(
-            new_body, vault_root, resolver=resolver
+    if count > 1 and not replace_all:
+        raise EditError(
+            code="AMBIGUOUS_MATCH",
+            missing=["old_string"],
+            reason=(
+                f"`old_string` occurs {count}×{where}{which}; refusing to guess "
+                "which. Add surrounding context to make it unique, or pass "
+                "replace_all=True to replace every occurrence."
+            ),
         )
-        body_changed = True
-    else:
-        new_body_final = body
+    # Normalize wikilinks only in the inserted snippet — the rest of the body
+    # is left byte-for-byte untouched (no incidental legacy rewrites).
+    if resolver is None:
+        resolver = WikilinkResolver(vault_root)
+    new_string_norm, warnings = normalize_body_wikilinks(
+        new_string, vault_root, resolver=resolver
+    )
+    n = -1 if replace_all else 1
+    return body.replace(old_string, new_string_norm, n), warnings
 
-    # Normalize trailing newline so we don't accumulate blanks across edits.
-    new_body_final = new_body_final.rstrip() + "\n"
 
-    new_text = f"---\n{fm_text}\n---\n{new_body_final}"
+def commit_edit(
+    vault_root: Path,
+    *,
+    abs_path: Path,
+    rel_path: str,
+    new_text: str,
+    date_iso: str,
+    why: str,
+    changed: list[str],
+    op: str = "edit",
+    extra_warnings: list[str] | None = None,
+) -> list[str]:
+    """Stage page write + opportunistic index refresh + ONE log entry; commit atomically.
 
-    # Log entry.
+    Shared by `edit` and `multi_edit` so both produce exactly one log entry and
+    one embedding re-sync per call. Returns the warnings list (extended with any
+    log-missing / partial-write warnings).
+    """
     kb = kb_root(vault_root)
     log_file = kb / "log.md"
     writes: list[PlannedWrite] = [PlannedWrite(path=abs_path, content=new_text)]
-    warnings: list[str] = list(body_warnings)
+    warnings: list[str] = list(extra_warnings or [])
 
-    # Opportunistic sub-index refresh — `edit` doesn't change counts, but
-    # surfacing any drift on every write keeps the indexes self-healing.
+    # Opportunistic sub-index refresh — surfacing any drift on every write
+    # keeps the indexes self-healing.
     top_index = kb / "index.md"
     if top_index.exists():
         current_top = top_index.read_text(encoding="utf-8")
@@ -270,14 +457,7 @@ def edit(
 
     rel_no_ext = rel_path.removesuffix(".md")
     if log_file.exists():
-        log_body_parts = [
-            f"Edit via kb-mcp. {why.strip()}"
-        ]
-        changed: list[str] = []
-        if body_changed:
-            changed.append("body (surgical)" if surgical else "body")
-        if tags is not None:
-            changed.append("tags")
+        log_body_parts = [f"Edit via kb-mcp. {why.strip()}"]
         if changed:
             log_body_parts.append(f"Changed: {', '.join(changed)}.")
         log_body = " ".join(log_body_parts)
@@ -286,6 +466,7 @@ def edit(
             date_iso=date_iso,
             rel_no_ext=rel_no_ext,
             body=log_body,
+            op=op,
         )
         writes.append(PlannedWrite(path=log_file, content=new_log))
     else:
@@ -297,38 +478,31 @@ def edit(
         log.exception("partial write during edit(); some files may be updated")
         warnings.append(f"partial write — reconcile on desktop: {e}")
         raise
-
-    return EditResult(path=rel_path, warnings=warnings)
-
-
-# ---------------- path resolution ----------------
+    return warnings
 
 
-def _resolve(vault_root: Path, path: str) -> tuple[Path, str]:
-    if not path or not path.strip():
-        raise EditError(code="INVALID_PATH", missing=["path"], reason="path is empty")
-    rel = path.strip().replace("\\", "/").lstrip("/")
-    if not rel.startswith("Knowledge Base/"):
-        rel = "Knowledge Base/" + rel
-    if not rel.endswith(".md"):
-        rel = rel + ".md"
-    candidate = vault_root / rel
-    try:
-        resolved = candidate.resolve()
-        resolved.relative_to(kb_root(vault_root).resolve())
-    except (ValueError, OSError) as e:
-        raise EditError(
-            code="INVALID_PATH",
-            missing=["path"],
-            reason=f"path escapes Knowledge Base/: {e}",
-        ) from None
-    if not candidate.exists():
-        raise EditError(
-            code="NOT_FOUND",
-            missing=["path"],
-            reason=f"file does not exist: {rel}",
-        )
-    return candidate, rel
+# ---------------- validate-only preview ----------------
+
+
+def _match_contexts(body: str, old_string: str, *, max_matches: int = 5) -> list[str]:
+    """Return the full line(s) each occurrence of `old_string` spans (capped).
+
+    Used by validate_only so the caller can eyeball *which* rows a match (or a
+    replace_all) would touch before committing.
+    """
+    contexts: list[str] = []
+    start = 0
+    while len(contexts) < max_matches:
+        idx = body.find(old_string, start)
+        if idx == -1:
+            break
+        line_start = body.rfind("\n", 0, idx) + 1
+        end = idx + len(old_string)
+        nl = body.find("\n", end)
+        line_end = nl if nl != -1 else len(body)
+        contexts.append(body[line_start:line_end])
+        start = end if end > idx else idx + 1
+    return contexts
 
 
 # ---------------- frontmatter surgery ----------------
@@ -385,10 +559,10 @@ def _clean_tags(tags: list[str]) -> list[str]:
 
 
 def _prepend_log_entry(
-    text: str, *, date_iso: str, rel_no_ext: str, body: str
+    text: str, *, date_iso: str, rel_no_ext: str, body: str, op: str = "edit"
 ) -> str:
     title = rel_no_ext.replace("Knowledge Base/", "", 1)
-    new_entry = f"## [{date_iso}] edit | {title}\n\n{escape_wikilinks_for_log(body)}\n"
+    new_entry = f"## [{date_iso}] {op} | {title}\n\n{escape_wikilinks_for_log(body)}\n"
     sep_idx = text.find(indexes.LOG_SEPARATOR)
     if sep_idx == -1:
         return text.rstrip() + "\n\n" + new_entry + "\n"

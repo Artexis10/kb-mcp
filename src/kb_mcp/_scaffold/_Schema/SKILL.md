@@ -2,7 +2,7 @@
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
 metadata:
-  version: 0.12.0
+  version: 0.13.0
 ---
 
 # Knowledge Base
@@ -77,14 +77,17 @@ These encode the KB's discipline: filenames, folders, frontmatter, supersession,
 | **note** | Compile a structured note from raw input or thinking | `Notes/<type>/` |
 | **link** | Create or update an entity, wire backlinks | `Entities/<type>/` |
 | **preserve** | Capture a binary / factual artifact for an incident scope | `Evidence/<scope>/` |
-| **edit** | Lightweight in-place edit of a compiled page (whole body, tags, or a surgical `old_string`→`new_string` snippet replace — token-cheap for filling a row or appending one line). Bumps `updated:` | the page |
+| **edit** | Lightweight in-place edit of a compiled page (whole body, tags, or a surgical `old_string`→`new_string` snippet replace — token-cheap for filling a row or appending one line). Bumps `updated:`. Optional `expected_hash` (drift guard) + `validate_only` (preview a match without writing) | the page |
+| **multi_edit** | Several surgical `old_string`→`new_string` pairs against ONE page in a single commit (one log entry / one re-embed). Pairs apply sequentially; any failing pair aborts the whole batch. Same `expected_hash`/`validate_only` options as `edit` | the page |
+| **set_take** | Fill a `[take: ]` opinion row by its leading text (`row_key`, e.g. "Whiplash (2014)"); the server locates the row — no body re-send. Bumps `updated:` | the page |
 | **find** | Type-aware search across the KB (read-only) | — |
 | **suggest_links** | Surface existing pages a draft or page should link to, hub-aware (read-only) | — |
-| **get** | Read a full file by path (any tree under vault root). Read-only | — |
+| **get** | Read a full file by path (any tree under vault root). Returns `content_hash` + `mtime` for the two-writer drift guard (echo `content_hash` to `edit`/`multi_edit` via `expected_hash`). Read-only | — |
 | **audit** | Lint pass: orphans, broken links, supersession integrity, aged unprocessed sources | proposals only |
 | **propose_compilation** | Draft a note scaffold from unprocessed source(s) — the backlog-drain companion to audit (read-only) | proposals only |
 | **replace** | Supersession: mark old, write new with header pointer | both old + new |
 | **reconcile** | Heal drift from out-of-band edits (Obsidian/mobile/manual): recompute index counts + incrementally re-embed stale files + report remaining drift. Narrower than `audit_fix` — no wikilink/frontmatter rewrites. Idempotent; `dry_run` reports only | drifted indexes + embedding sidecar |
+| **provenance_report** | Scan note bodies for `<!-- key:value -->` provenance tags (filter by key/value/path) — e.g. "all conv-derived takes," "outstanding add-to-imdb flags." Read-only | — |
 
 For the full per-operation spec — inputs, validation, write rules, edge cases — see `references/operations.md`.
 
@@ -133,6 +136,9 @@ These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch aro
 - "this is connected to [[X]]," "link this to Q strategy," "create an entity for X" → **link**
 - "preserve this letter," "file this in evidence," "save this for the record" → **preserve**
 - "update the skill," "bump the schema," "the KB structure needs to change" → no MCP tool — hand-edit `_Schema/` files through the rule-8 symlink (or directly in Claude Code via the Edit tool); the harness sees changes immediately because it's the same file.
+- "fill in the take for X," "write my take on X," "set the take on that row" → **set_take**
+- "make these few edits to the page," "fix these N lines in one go" (same page) → **multi_edit**
+- "show all conv-derived takes," "what's flagged add-to-imdb," "where did this opinion come from" → **provenance_report**
 - "what do I have on X," "find my notes on Y," "have I covered Z" → **find**
 - "what should this link to," "what existing notes relate to this draft," "densify this page's links" → **suggest_links**
 - "what should I compile next," "drain the source backlog," "draft a note from these sources" → **propose_compilation**

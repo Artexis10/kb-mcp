@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import find as find_module
+from .vault import content_hash
 
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ class GetResult:
     frontmatter: dict
     body: str           # markdown body without the frontmatter delimiters
     content: str        # full raw file (frontmatter delimiters + body)
+    content_hash: str   # sha256 of `content` — echo to edit(expected_hash=...)
+    mtime: float        # file mtime (advisory; hash is the real guard)
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +44,8 @@ class GetResult:
             "frontmatter": self.frontmatter,
             "body": self.body,
             "content": self.content,
+            "content_hash": self.content_hash,
+            "mtime": self.mtime,
         }
 
 
@@ -120,4 +125,6 @@ def get_page(vault_root: Path, *, path: str) -> GetResult:
         frontmatter=parsed.frontmatter,
         body=parsed.body,
         content=content,
+        content_hash=content_hash(content),
+        mtime=mtime,
     )

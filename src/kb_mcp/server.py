@@ -51,14 +51,17 @@ from . import list_directory as list_directory_module
 from . import list_inbound_links as list_inbound_links_module
 from . import list_trash as list_trash_module
 from . import move_file as move_file_module
+from . import multi_edit as multi_edit_module
 from . import note as note_module
 from . import preserve as preserve_module
+from . import provenance as provenance_module
 from . import query_log
 from . import reconcile as reconcile_module
 from . import recover_from_trash as recover_from_trash_module
 from . import replace as replace_module
 from . import schema
 from . import set_frontmatter_field as set_frontmatter_field_module
+from . import set_take as set_take_module
 from .vault import find_body_wikilinks, resolve_vault
 
 
@@ -784,6 +787,42 @@ def build_server(*, require_auth: bool) -> FastMCP:
         return report.as_dict()
 
     @mcp.tool
+    def provenance_report(
+        tag: str | None = None,
+        key: str | None = None,
+        value: str | None = None,
+        path: str | None = None,
+    ) -> dict:
+        """Scan note bodies for `<!-- key:value -->` provenance tags. Read-only.
+
+        On-demand scan over markdown bodies — no index, no sidecar. Use it to
+        answer "show all conv:-derived takes" or "what's flagged add-to-imdb"
+        without grepping. The opinion/taste rows carry provenance as HTML
+        comments (e.g. `<!-- platform:imdb -->`, `<!-- conv:2026-06-01 -->`);
+        this reads them in place. Tags inside fenced code are ignored; multiple
+        comments and multiple key:value pairs on one line are all parsed.
+
+        Args:
+            tag: Shorthand filter — "key" or "key:value" (e.g. "platform:imdb").
+            key: Filter to rows carrying this provenance key.
+            value: With key, require this exact value.
+            path: Restrict the scan to one vault-relative file (else the whole
+                Knowledge Base is walked).
+
+        Returns:
+            {findings: [{path, line_number, row_text, tags}], summary:
+             {key: count}}. line_number is body-relative (frontmatter excluded).
+        """
+        findings = provenance_module.scan_provenance(
+            vault_root, tag=tag, key=key, value=value, path=path
+        )
+        summary: dict[str, int] = {}
+        for f in findings:
+            for k in f.tags:
+                summary[k] = summary.get(k, 0) + 1
+        return {"findings": [f.as_dict() for f in findings], "summary": summary}
+
+    @mcp.tool
     def propose_compilation(
         sources: list[str],
         suggested_title: str | None = None,
@@ -843,9 +882,12 @@ def build_server(*, require_auth: bool) -> FastMCP:
                   literal path doesn't resolve; auto-adds `.md`).
 
         Returns:
-            {path, frontmatter, body, content}. `content` is the raw file
-            text (including frontmatter delimiters); `body` is just the
-            markdown after the frontmatter.
+            {path, frontmatter, body, content, content_hash, mtime}.
+            `content` is the raw file text (including frontmatter delimiters);
+            `body` is just the markdown after the frontmatter. `content_hash`
+            is a sha256 you can echo back to `edit`/`multi_edit` via
+            `expected_hash` to refuse a write if the file changed on disk since
+            this read (two-writer drift guard); `mtime` is advisory.
 
         Errors:
             INVALID_PATH (path escapes vault root or empty);
@@ -866,6 +908,8 @@ def build_server(*, require_auth: bool) -> FastMCP:
         old_string: str | None = None,
         new_string: str | None = None,
         replace_all: bool = False,
+        expected_hash: str | None = None,
+        validate_only: bool = False,
     ) -> dict:
         """Lightweight in-place edit of a page (body, tags, or a surgical snippet).
 
@@ -923,15 +967,25 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 differ from it).
             replace_all: Replace every occurrence instead of requiring a
                 unique match. Default False.
+            expected_hash: Optional drift guard. Pass the `content_hash` you
+                got from `get`; the edit refuses (STALE_EDIT) if the file
+                changed on disk since, so you never clobber another writer.
+            validate_only: Preview a surgical match without writing. Needs
+                `old_string`. Reports how many rows would be hit instead of
+                committing — use it before a `replace_all` to avoid an
+                ambiguous match silently touching more rows than intended.
 
         Returns:
-            {path, warnings}.
+            Normally {path, warnings}. When validate_only=True:
+            {path, validate_only, mode, match_count, matches} — `matches` is
+            the line(s) around each occurrence; nothing is written.
 
         Errors:
             INVALID_EDIT (nothing to edit, old_string+new_body both given,
             new_string missing/equal, path in Sources/Evidence); NOT_FOUND;
             STRING_NOT_FOUND (surgical snippet absent); AMBIGUOUS_MATCH
             (snippet not unique and replace_all=False); ALREADY_SUPERSEDED;
+            STALE_EDIT (expected_hash mismatch — file changed since read);
             UNREADABLE.
         """
         try:
@@ -944,10 +998,121 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 old_string=old_string,
                 new_string=new_string,
                 replace_all=replace_all,
+                expected_hash=expected_hash,
+                validate_only=validate_only,
             )
         except edit_module.EditError as e:
             raise ValueError(
                 f"{e.code}: {e.reason} (missing: {e.missing})"
+            ) from e
+        return result.as_dict()
+
+    @mcp.tool
+    def multi_edit(
+        path: str,
+        why: str,
+        edits: list[dict],
+        expected_hash: str | None = None,
+        validate_only: bool = False,
+    ) -> dict:
+        """Apply several surgical edits to ONE page in a single atomic commit.
+
+        Like `edit`'s surgical mode, but batches N `{old_string, new_string}`
+        pairs into one write — one log entry, one `updated:` bump, one embedding
+        re-sync — instead of N separate `edit` calls. Use it when you're making
+        several tweaks to the same page in a turn (e.g. filling multiple rows).
+
+        Pairs apply SEQUENTIALLY: pair K matches the result of pair K-1 (same as
+        a precise multi-find-and-replace). Each pair follows `edit`'s surgical
+        rules — `old_string` must match exactly, and uniquely unless that pair
+        sets `replace_all`. If any pair fails to match (or is ambiguous), the
+        WHOLE batch is rejected and nothing is written: fix that pair and resend
+        the full list.
+
+        Args:
+            path: Vault-relative path to the page (same shape as `get`).
+            why: One-line rationale; lands in the single log entry.
+            edits: List of objects, each {old_string, new_string, replace_all?}.
+                `replace_all` defaults to false (per pair).
+            expected_hash: Optional drift guard — pass `content_hash` from
+                `get`; refuses (STALE_EDIT) if the file changed since.
+            validate_only: Preview each pair's match count against the evolving
+                body without writing.
+
+        Returns:
+            Normally {path, edits_applied, warnings}. When validate_only=True:
+            {path, validate_only, edits:[{index, match_count, replace_all}]}.
+
+        Errors:
+            INVALID_EDIT (empty/malformed edits, no-op pair, path in Sources/
+            Evidence); NOT_FOUND; STRING_NOT_FOUND / AMBIGUOUS_MATCH (a pair
+            failed — the message names which edit #); ALREADY_SUPERSEDED;
+            STALE_EDIT; UNREADABLE.
+        """
+        try:
+            result = multi_edit_module.multi_edit(
+                vault_root,
+                path=path,
+                why=why,
+                edits=edits,
+                expected_hash=expected_hash,
+                validate_only=validate_only,
+            )
+        except edit_module.EditError as e:
+            raise ValueError(
+                f"{e.code}: {e.reason} (missing: {e.missing})"
+            ) from e
+        return result.as_dict()
+
+    @mcp.tool
+    def set_take(
+        path: str,
+        row_key: str,
+        take: str,
+        why: str,
+        overwrite: bool = False,
+    ) -> dict:
+        """Fill a `[take: ]` opinion row by its leading text — no body re-send.
+
+        Token-cheap companion to `edit`, specialized for the film/opinion row
+        format `- <Item> — <rating> — [take: ]  <!-- ... -->`. The SERVER reads
+        the note and locates the row by `row_key` (its natural leading text,
+        e.g. "Whiplash (2014)") — you do NOT fetch the (often huge) note first
+        just to build an exact match string. Inherits `edit`'s atomicity,
+        `updated:` bump, single log entry, and embedding re-sync.
+
+        Args:
+            path: Vault-relative path to the page holding the row.
+            row_key: Natural leading text of the row's item (NOT a synthetic
+                ID). Matched case-insensitively; em-dash, en-dash and hyphen are
+                folded. Must match exactly one fillable row.
+            take: The take text to write between `[take:` and `]`.
+            why: One-line rationale; lands in log.md (auditable).
+            overwrite: If false (default), only fills an empty `[take: ]`. If
+                true, also replaces an already-filled take.
+
+        Returns:
+            {path, row, warnings} — `row` is the filled row for confirmation.
+
+        Errors:
+            ROW_NOT_FOUND (no matching fillable row — names whether a filled one
+            exists); AMBIGUOUS_ROW (row_key matches multiple rows — candidates
+            listed); plus edit's errors (INVALID_EDIT for Sources/Evidence,
+            NOT_FOUND, ALREADY_SUPERSEDED, UNREADABLE).
+        """
+        try:
+            result = set_take_module.set_take(
+                vault_root,
+                path=path,
+                row_key=row_key,
+                take=take,
+                why=why,
+                overwrite=overwrite,
+            )
+        except set_take_module.SetTakeError as e:
+            raise ValueError(
+                f"{e.code}: {e.reason}"
+                + (f" (candidates: {e.candidates})" if e.candidates else "")
             ) from e
         return result.as_dict()
 
