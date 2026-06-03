@@ -407,24 +407,9 @@ Frozen things (Sources captures, decisions about past events) and KB-native cont
 
 ## Audit (lint) checks
 
-The **audit** operation runs the following checks and proposes fixes (never auto-fixes):
+The **audit** operation runs read-only checks and proposes fixes (never auto-fixes); the report is reviewed before anything is written. It covers: orphans, broken wikilinks, supersession integrity, stale frontmatter, `index.md`/`log.md` drift, aged unprocessed sources (oldest-first — pair with `propose_compilation`), status/location mismatch, unfinished experiments, stalled production lifecycles, stale hubs/snapshots, harness symlink integrity, unregistered project keys, embedding drift, and pending relevance pairs.
 
-- **Orphans** — compiled pages with zero inbound links and zero outbound links beyond their `sources` block. Propose: link or archive.
-- **Broken wikilinks** — `[[X]]` where `X` does not resolve. The audit skips wikilinks inside fenced code blocks and inline code spans (so `[[:space:]]` regex literals don't false-positive). Bare names resolve against filename stems AND frontmatter `title:` (so date-prefixed sources with a title match are not flagged); a link carrying an explicit non-`.md` extension (`[[…/scan.pdf]]`, `[[Domains/diagram.png]]`) resolves if that file exists on disk, matching Obsidian's attachment links. Findings inside append-only trees (`Sources/`, `Evidence/`) — which can't be repaired in place — are surfaced at `info` severity with `meta.immutable`, keeping them out of the actionable `warn` set. Propose: fix path or create stub entity.
-- **Supersession integrity** — pages marked `superseded` must have `superseded_by` pointing to a real page; pages marked `active` must not appear as the target of any `superseded_by`.
-- **Stale frontmatter** — required fields missing for the page type. Includes: research-notes with `tenant` set but `project` not equal to `q` (the `tenant` field is Q-only); patterns with `project:` (singular) when `projects:` (plural) is the convention for cross-project patterns.
-- **`index.md` / `log.md` drift** — files in folders that are not catalogued, catalogue entries pointing to missing files, or `log.md` entries without corresponding artifacts on disk (and vice versa).
-- **Unprocessed sources** — `Sources/` files with empty `ingested_into:`, now **aged and triaged oldest-first**: each finding carries `meta` (`age_days`, `age_bucket` ∈ fresh <30d / aging <90d / stale, `captured`) and escalates to `warn` once stale. Drain the worst rot first: pick a coherent set of the oldest, call **`propose_compilation(sources=[…])`** for a ready-to-fill scaffold (inferred note_type + outline + sources + adjacent connections), then compile via **note**. Grouping which sources belong in one note is your call — `propose_compilation` doesn't guess.
-- **Status / location mismatch** — pages with `status: archived` not living in an `_archive/` subfolder, and vice versa.
-- **Unfinished experiments** — experiments with `status: active` and `started` date older than the experiment's `duration` field. Propose: write up results, mark concluded, or extend.
-- **Unfinished production lifecycles** — production-logs with `status: recorded` or earlier whose `published` field has been null for >60 days. Propose: update status, fill outcomes, or move to dropped.
-- **Stale hubs / snapshots** — research-notes flagged as hub or snapshot with `updated:` older than threshold (default: 90 days for hubs, 30 days for snapshots). Propose: refresh or mark explicitly as historical.
-- **Harness symlink integrity** — `~/.claude/skills/knowledge-base/` is supposed to be a symlink to the local KB's `_Schema/` folder per rule 8. Check: `Get-Item <path> | Select-Object Target` (PowerShell) or `test -L <path> && readlink <path>` (Bash). If the path is a regular folder (not a symlink), or the target doesn't resolve, the symlink is broken — drift is back. Propose: re-run the symlink setup from rule 8. Cheap check; run on every audit.
-- **Unregistered project key** — pages with a `project:` or `projects:` value not in `_Schema/project-keys.yaml`. Catches drift from pre-typo-guard history or Tier 2 `create_file` escape-hatch writes that bypass the auto-register flow. Propose: fix the value via `edit` (frontmatter-patch mode; its typo guard will surface the intended key) or hand-add the new key to the YAML.
-- **Embedding drift** — sidecar rows whose row mtime is older than the on-disk file mtime (likely an Obsidian-side edit that bypassed kb-mcp's writer hooks). Propose: run `reconcile` (incremental, stale rows only) or `audit_fix(rebuild_embeddings=true)` (full wipe + rebuild) to refresh.
-- **Relevance pairs pending** — model-free join of `logs/queries.jsonl` × `logs/writes.jsonl`: counts `(query → cited_path)` labels from real usage (a `note`/`replace` that cited a path a recent `find()` had surfaced) that aren't yet in `tests/golden/queries.yaml`. Makes the retrieval feedback loop's unconfirmed backlog visible so it compounds instead of sitting idle. Propose: run `scripts/derive_relevance_pairs.py`, confirm pairs into the golden set, re-run `scripts/eval_retrieval.py`. Repo-global (not per-vault); gated by `KB_MCP_DISABLE_RELEVANCE_CHECK`.
-
-Audit is read-mostly. The output is a proposal report that the user reviews; nothing is rewritten without explicit confirmation per item or batch.
+Per-check detail — exactly what each flags, its severity, and the proposed fix — is in **`references/audit-checks.md`**. Read it when running or acting on an audit.
 
 ## What this skill does NOT do
 
@@ -461,5 +446,6 @@ Audit is read-mostly. The output is a proposal report that the user reviews; not
 - `references/write-scope.md` — full read-only / writeable path map
 - `references/supersession.md` — supersession protocol
 - `references/operations.md` — detailed per-operation specs
+- `references/audit-checks.md` — per-check detail for the audit operation
 
 Read each on first use. The SKILL.md you're reading now is the contract; the references are the manual.
