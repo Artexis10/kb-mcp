@@ -2,7 +2,7 @@
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
 metadata:
-  version: 0.13.1
+  version: 0.14.0
 ---
 
 # Knowledge Base
@@ -105,12 +105,10 @@ These encode the KB's discipline: filenames, folders, frontmatter, supersession,
 | **note** | Compile a structured note from raw input or thinking | `Notes/<type>/` |
 | **link** | Create or update an entity, wire backlinks | `Entities/<type>/` |
 | **preserve** | Capture a binary / factual artifact for an incident scope | `Evidence/<scope>/` |
-| **edit** | Lightweight in-place edit of a compiled page (whole body, tags, or a surgical `old_string`→`new_string` snippet replace — token-cheap for filling a row or appending one line). Bumps `updated:`. Optional `expected_hash` (drift guard) + `validate_only` (preview a match without writing) | the page |
-| **multi_edit** | Several surgical `old_string`→`new_string` pairs against ONE page in a single commit (one log entry / one re-embed). Pairs apply sequentially; any failing pair aborts the whole batch. Same `expected_hash`/`validate_only` options as `edit` | the page |
-| **set_take** | Fill a `[take: ]` opinion row by its leading text (`row_key`, e.g. "Whiplash (2014)"); the server locates the row — no body re-send. Bumps `updated:` | the page |
+| **edit** | In-place edit of a compiled page. One mode per call: whole `body` / `tags` / surgical `old_string`→`new_string`; **`edits=[…]`** several surgical pairs in one atomic commit (sequential; any failing pair aborts the batch — folds in former `multi_edit`); **`row_key`+`take`** fill a `[take: ]` opinion row by its leading text, server locates the row, no body re-send (former `set_take`); **`field`+`value`** patch ONE frontmatter field, requires `why:` (former `set_frontmatter_field`). Bumps `updated:`. Optional `expected_hash` (drift guard) + `validate_only` | the page |
 | **find** | Type-aware search across the KB (read-only) | — |
 | **suggest_links** | Surface existing pages a draft or page should link to, hub-aware (read-only) | — |
-| **get** | Read a full file by path (any tree under vault root). Returns `content_hash` + `mtime` for the two-writer drift guard (echo `content_hash` to `edit`/`multi_edit` via `expected_hash`). Read-only | — |
+| **get** | Read a full file by path (any tree under vault root); **`frontmatter_only=true`** returns just the frontmatter, no body (folds in former `get_frontmatter`). Returns `content_hash` + `mtime` for the two-writer drift guard (echo `content_hash` to `edit` via `expected_hash`). Read-only | — |
 | **audit** | Lint pass: orphans, broken links, supersession integrity, aged unprocessed sources | proposals only |
 | **propose_compilation** | Draft a note scaffold from unprocessed source(s) — the backlog-drain companion to audit (read-only) | proposals only |
 | **replace** | Supersession: mark old, write new with header pointer | both old + new |
@@ -125,35 +123,31 @@ These exist for things Tier 1 can't express. Use them when:
 
 1. **Building new folder structures.** New top-level KB folders like `Identity/`, `Templates/` — no Tier 1 op routes there.
 2. **Files that aren't typed notes.** Skill files, config files, scratch — they don't fit the page-type taxonomy.
-3. **Surgical edits the Tier 1 set can't express.** Single frontmatter-field changes, simple appends, file renames.
+3. **Edits the Tier 1 set can't express.** Simple appends, file renames. (Single frontmatter-field changes are now Tier 1 — `edit` with `field`/`value`.)
 
-Do NOT use Tier 2 when Tier 1 fits. If it's a research-note → `note`. If it's an entity → `link`. If it's a source → `add`. If it's evidence → `preserve`. If it's a body/tags edit on a compiled page → `edit`. Tier 2 is the fallback, not the default.
+Do NOT use Tier 2 when Tier 1 fits. If it's a research-note → `note`. If it's an entity → `link`. If it's a source → `add`. If it's evidence → `preserve`. If it's a body/tags/frontmatter-field edit on a compiled page → `edit`. Tier 2 is the fallback, not the default.
 
 | Op | Intent | Writes to |
 |---|---|---|
-| **create_file** | Write a file at any vault path (with optional frontmatter dict) | arbitrary path |
-| **create_directory** | mkdir at any vault path (parents=true by default) | arbitrary path |
+| **create_file** | Write a file at any vault path (optional frontmatter dict). **`kind="dir"`** instead makes a folder (mkdir -p; folds in former `create_directory`) | arbitrary path |
 | **list_directory** | List files+subfolders at a path (recursive optional). Read-only | — |
 | **move_file** | Rename/relocate a file; rewrites inbound wikilinks by default. Intra-tree moves within `Sources/`/`Evidence/` allowed (themed sub-folders); boundary-crossing still refused | both old + new |
-| **delete_file** | Trash a file (moves to `_trash/`, recoverable). Requires `confirm=true`; refuses on inbound links unless `force_orphan` | path → `_trash/` |
-| **delete_directory** | Trash a folder (whole tree, recoverable). Requires `confirm=true` + `recursive=true` for non-empty | path → `_trash/` |
+| **delete** | Trash a file OR folder — auto-detected (moves to `_trash/`, recoverable). Requires `confirm=true`; folders need `recursive=true` if non-empty; refuses on inbound links unless `force_orphan`. Folds in former `delete_file`/`delete_directory` | path → `_trash/` |
 | **list_trash** | Enumerate recoverable trash entries (with metadata + drift detection). Read-only | — |
 | **recover_from_trash** | Undo a delete: move from `_trash/` back to original (or custom) location, clean sidecar | `_trash/` → restored path |
 | **append_to_file** | Append text to an existing file | the file |
-| **get_frontmatter** | Read just the frontmatter (no body). Read-only | — |
-| **set_frontmatter_field** | Patch one frontmatter field; always bumps `updated:`. Requires `why:` | the file |
 | **list_inbound_links** | Find all files whose wikilinks resolve to a target. Read-only | — |
 
 ### Discipline preserved across BOTH tiers
 
 These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch around them:
 
-- **Sources/ and Evidence/ are append-only.** Tier 2 `create_file`, `delete_file`, `delete_directory`, `append_to_file` (for Sources), and `set_frontmatter_field` all refuse on these trees. Use `add` and `preserve` (the only content writers). **Exception — `move_file` relocation:** a move that stays *within* the same append-only tree (themed sub-foldering) is allowed, since it changes location not content; boundary-crossing moves (out of, or into from elsewhere) are still refused.
+- **Sources/ and Evidence/ are append-only.** `create_file`, `delete`, `append_to_file` (for Sources), and `edit`'s frontmatter-patch mode all refuse on these trees. Use `add` and `preserve` (the only content writers). **Exception — `move_file` relocation:** a move that stays *within* the same append-only tree (themed sub-foldering) is allowed, since it changes location not content; boundary-crossing moves (out of, or into from elsewhere) are still refused.
 - **Curated trees are write-protected.** `Cognitive Core/`, `Domains/`, `Prompt Bank/`, `Products/`, `Personal Context/`, `Systems Thinking/` refuse Tier 2 writes by default. Pass `allow_curated=true` only when genuinely building infrastructure inside one — it's not a "I just want to write here" override; it's a deliberate per-call acknowledgement. Reads are unrestricted.
-- **Every write logs to `Knowledge Base/log.md`** with the operation, path, and a one-line rationale. Tier 2 ops include why-fields where appropriate (`set_frontmatter_field` requires `why:`). Additionally, every MCP call (reads and writes) is recorded in the service log at `logs/kb-mcp.log` with the tool name, duration, and outcome — for operational/debug visibility without polluting `log.md`'s content-history role.
-- **Deletes are never permanent at the MCP layer.** `delete_file` and `delete_directory` move targets to `Knowledge Base/_trash/YYYY-MM-DD/HHMMSS-<sanitized-original-path>` with a `.meta.json` sidecar capturing original path, timestamp, inbound link count, and which force-flags fired. Recovery is `move_file` from the trash path back. Permanent removal happens desk-side via `rm Knowledge Base/_trash/...`. The guards (`confirm=true`, `force_orphan`, `force_superseded`, `allow_curated`) still mark the action as deliberate even when it's reversible. The `_trash/` subtree is excluded from `find` and `audit`.
-- **Supersession over deletion** still applies. `delete_file` refuses on pages with `superseded_by:` set unless `force_superseded=true`. For compiled material, prefer `replace`. For multi-file supersession-chain cleanup (e.g. trashing v1 *and* v2), `delete_file` accepts `expected_dead_inbound: list[str]` — name the files whose links should be ignored because they're being trashed in the same workflow.
-- **Wikilink integrity.** `move_file` defaults to updating inbound links. `delete_file` and `delete_directory` refuse on files (or trees) with inbound links unless `force_orphan=true`. The KB is a graph; ops that fragment it are explicit.
+- **Every write logs to `Knowledge Base/log.md`** with the operation, path, and a one-line rationale. Where appropriate ops require a `why:` (e.g. `edit`'s frontmatter-patch mode). Additionally, every MCP call (reads and writes) is recorded in the service log at `logs/kb-mcp.log` with the tool name, duration, and outcome — for operational/debug visibility without polluting `log.md`'s content-history role.
+- **Deletes are never permanent at the MCP layer.** `delete` moves targets to `Knowledge Base/_trash/YYYY-MM-DD/HHMMSS-<sanitized-original-path>` with a `.meta.json` sidecar capturing original path, timestamp, inbound link count, and which force-flags fired. Recovery is `recover_from_trash` (or `move_file` from the trash path back). Permanent removal happens desk-side via `rm Knowledge Base/_trash/...`. The guards (`confirm=true`, `force_orphan`, `force_superseded`, `allow_curated`) still mark the action as deliberate even when it's reversible. The `_trash/` subtree is excluded from `find` and `audit`.
+- **Supersession over deletion** still applies. `delete` refuses on pages with `superseded_by:` set unless `force_superseded=true`. For compiled material, prefer `replace`. For multi-file supersession-chain cleanup (e.g. trashing v1 *and* v2), `delete` accepts `expected_dead_inbound: list[str]` — name the files whose links should be ignored because they're being trashed in the same workflow.
+- **Wikilink integrity.** `move_file` defaults to updating inbound links. `delete` refuses on files (or trees) with inbound links unless `force_orphan=true`. The KB is a graph; ops that fragment it are explicit.
 
 ### Phrasing → operation mapping (heuristic, not exhaustive)
 
@@ -164,8 +158,8 @@ These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch aro
 - "this is connected to [[X]]," "link this to Q strategy," "create an entity for X" → **link**
 - "preserve this letter," "file this in evidence," "save this for the record" → **preserve**
 - "update the skill," "bump the schema," "the KB structure needs to change" → no MCP tool — hand-edit `_Schema/` files through the rule-8 symlink (or directly in Claude Code via the Edit tool); the harness sees changes immediately because it's the same file.
-- "fill in the take for X," "write my take on X," "set the take on that row" → **set_take**
-- "make these few edits to the page," "fix these N lines in one go" (same page) → **multi_edit**
+- "fill in the take for X," "write my take on X," "set the take on that row" → **edit** (`row_key`+`take`)
+- "make these few edits to the page," "fix these N lines in one go" (same page) → **edit** (`edits=[…]`)
 - "show all conv-derived takes," "what's flagged add-to-imdb," "where did this opinion come from" → **provenance_report**
 - "what do I have on X," "find my notes on Y," "have I covered Z" → **find**
 - "what should this link to," "what existing notes relate to this draft," "densify this page's links" → **suggest_links**
@@ -173,17 +167,17 @@ These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch aro
 - "audit the KB," "lint the vault," "check for orphans," "clean up stale notes" → **audit**
 - "I edited the vault directly / in Obsidian / on my phone — sync it up," "heal the drift," "counts/embeddings are stale after out-of-band edits" → **reconcile**
 - "this replaces the old strategy," "supersede the old note on X" → **replace**
-- "make a new folder for X," "scaffold a Templates/ directory" → **create_directory** (Tier 2)
+- "make a new folder for X," "scaffold a Templates/ directory" → **create_file** (`kind="dir"`, Tier 2)
 - "create a file at X with this content," "write an Identity/ page" (path doesn't fit a typed-note route) → **create_file** (Tier 2)
 - "rename this page to X," "move this note to Patterns/" → **move_file** (Tier 2; defaults to updating inbound wikilinks)
 - "what's in folder X," "list the files under Y" → **list_directory** (Tier 2)
 - "what links to X" → **list_inbound_links** (Tier 2)
-- "flip the status to archived," "set tenant: tu on this page" (single-field tweak) → **set_frontmatter_field** (Tier 2)
+- "flip the status to archived," "set tenant: tu on this page" (single-field tweak) → **edit** (`field`+`value`)
 - "tack this onto the end of X" → **append_to_file** (Tier 2)
-- "delete this file" → **delete_file** (Tier 2; trash semantics — recoverable. Supersession still preferred for compiled material — rule 6)
-- "delete this folder," "drop the whole subtree" → **delete_directory** (Tier 2; trash semantics; needs `recursive=true` if non-empty)
+- "delete this file" → **delete** (Tier 2; trash semantics — recoverable. Supersession still preferred for compiled material — rule 6)
+- "delete this folder," "drop the whole subtree" → **delete** (Tier 2; auto-detects folder; needs `recursive=true` if non-empty)
 - "what's in the trash," "show me recoverable deletes" → **list_trash** (Tier 2)
-- "undelete," "recover this," "put it back where it was" → **recover_from_trash** (Tier 2; the ergonomic undo for delete_file/delete_directory)
+- "undelete," "recover this," "put it back where it was" → **recover_from_trash** (Tier 2; the ergonomic undo for `delete`)
 
 When the user says something oblique like "interesting, save it," default to **add** + ask whether to compile a note.
 
@@ -230,7 +224,7 @@ The retrieval stack also runs at *authoring* time so each new entry strengthens 
 
 ### Measured retrieval (desk-side)
 
-Ranking is evidence-tuned, not vibes: `scripts/eval_retrieval.py` scores `find()` (NDCG/MRR/recall) against `tests/golden/queries.yaml` and `--sweep`s the knobs. Every `find` is logged to `logs/queries.jsonl` and every write to `logs/writes.jsonl`; `scripts/derive_relevance_pairs.py` joins them into weak `(query → cited_path)` labels that *propose* golden-set additions to confirm — so the eval set grows from real usage. These are desk-side dev tools (they need the model); they are not invoked during normal KB ops.
+Ranking is evidence-tuned: `scripts/eval_retrieval.py` scores `find()` (NDCG/MRR/recall) against `tests/golden/queries.yaml`; `logs/queries.jsonl` × `logs/writes.jsonl` join into weak `(query → cited_path)` labels that grow the golden set from real usage (`scripts/derive_relevance_pairs.py`). Desk-side dev tooling — not invoked during normal KB ops.
 
 ## Activity log
 
@@ -253,7 +247,7 @@ Distinction from `index.md`:
 
 Both update on every confirmed write.
 
-**Trim discipline.** When a write causes one or more entries to fall off the index's cap-50 window, the triggering log entry must explicitly note the trim — e.g. *"(bottom entry X drops off at cap-50; trimmed N this write)"* — so a future reader scanning log.md sees the displacement, not just the new write. The trim is a side effect that deserves a paper trail. (History was: cap-20 prior to v0.8.0; raised to cap-50 because write velocity was aging entries off in ~2 days.)
+**Trim discipline.** When a write pushes entries off the index's cap-50 window, the triggering log entry must note the trim — e.g. *"(bottom entry X drops off at cap-50; trimmed N this write)"* — so a reader scanning log.md sees the displacement, not just the new write.
 
 ## Descriptive vs analytical coverage
 
@@ -316,62 +310,22 @@ Two flavors of sub-folder index:
 
 If you add a new subfolder under `Notes/Research/<scope>/`, `Entities/*`, etc. that doesn't already have a bullet in the relevant index, the writer leaves the index untouched and `audit` surfaces the gap via `index_drift` — add a bullet with a description manually so the auto-refresh has a count token to update.
 
-8. **Deploy via symlink.** The harness loader at `~/.claude/skills/knowledge-base/` is a directory symlink to the KB canonical `_Schema/` folder on each machine — making the canonical and deployed copy literally the same files. Schema ops write to the canonical path; the harness sees the change immediately because it's the same file.
-
-    Per-machine symlink targets:
-    - Desktop: `C:\Users\<you>\.claude\skills\knowledge-base\` → `<your-vault>\Knowledge Base\_Schema\`
-    - Laptop: `C:\Users\<you>\.claude\skills\knowledge-base\` → `<your-vault>\Knowledge Base\_Schema\`
-
-    The symlinks are per-machine (different targets) and **must be excluded from yadm tracking** so each machine maintains its own local link. The canonical content is sync'd across machines via Obsidian Sync; each machine's symlink resolves to its local vault path.
-
-    Setup (one-time per machine; requires Windows Developer Mode for non-admin symlink creation):
-
-    ```powershell
-    # 1. Stop yadm tracking the skill folder (run from any directory)
-    yadm rm --cached -r ~/.claude/skills/knowledge-base
-    # Add ".claude/skills/knowledge-base/" to yadm's gitignore equivalent
-    yadm commit -m "Exclude knowledge-base skill folder; per-machine symlink"
-
-    # 2. Backup-then-replace the existing folder
-    Move-Item "$env:USERPROFILE\.claude\skills\knowledge-base" `
-              "$env:USERPROFILE\.claude\skills\knowledge-base.pre-symlink-backup"
-
-    # 3. Create the symlink (target per machine — adjust path)
-    New-Item -ItemType SymbolicLink `
-             -Path "$env:USERPROFILE\.claude\skills\knowledge-base" `
-             -Target "<vault>\Knowledge Base\_Schema"
-
-    # 4. Verify
-    Get-Item "$env:USERPROFILE\.claude\skills\knowledge-base" | Select-Object Target
-    ```
-
-    **PowerShell blocked?** Create the symlink from the Bash tool instead: `MSYS_NO_PATHCONV=1 cmd /c mklink /D "<link>" "<target>"` (still needs Windows Developer Mode for non-admin; verify with `ls -ld <link>`). This is how the desktop link was created on 2026-05-21 when PowerShell was deny-blocked.
-
-    *Why this works:* Claude Code's skill loader reads files at the symlink path; the OS transparently dereferences to the canonical. Editing the canonical = editing the deploy. The structural duplication is gone, and so is the drift class.
+8. **Deploy via symlink.** The harness loader at `~/.claude/skills/knowledge-base/` is a directory symlink to the KB canonical `_Schema/` folder on each machine — canonical and deployed are literally the same files, so a schema edit takes effect immediately and the drift class is gone. Per-machine targets (e.g. `C:\Users\<you>\.claude\skills\knowledge-base\` → `<vault>\Knowledge Base\_Schema\`); the links are per-machine, excluded from yadm tracking, with canonical content synced across machines via Obsidian Sync. First-time setup is a one-time symlink creation per machine — `New-Item -ItemType SymbolicLink` (needs Windows Developer Mode for non-admin), or `MSYS_NO_PATHCONV=1 cmd /c mklink /D "<link>" "<target>"` from Bash if PowerShell is blocked. `audit`'s symlink-integrity check flags a broken link.
 
 For the full read-only/write-target map see `references/write-scope.md`.
 
 ## Page types
 
-Eight page types live under `Knowledge Base/`. Each has a required frontmatter shape, writing conventions, and naming rules.
+Eight page types under `Knowledge Base/`, each with a required frontmatter shape, naming rule, and location. **Full per-type spec + content shapes: `references/page-types.md`; frontmatter: `references/frontmatter.md`.** The behaviorally-load-bearing distinctions:
 
-- **source** — raw input under `Sources/<type>/`. **Two flavors:**
-    - *Transcript* — content the user provided (pasted conversation, captured article, book excerpt). The source captures content as-is.
-    - *Origination record* — Claude-written session capture documenting the reasoning behind what was compiled in a session, with `ingested_into:` listing every downstream artifact the session produced. Used when a single conversation produces multiple compiled artifacts and the session itself is the reasoning trail.
-    
-    Both flavors share the same frontmatter shape; the body content differs.
-- **research-note** — compiled, project-or-domain-scoped research under `Notes/Research/<scope>/`. **Informal subtypes (not separate page types):**
-    - *Standard* — synthesised research on a topic.
-    - *Hub* — orients around a major subsystem or workstream, linking out extensively. Refresh on major capability ships. E.g., `tu-operational-system`, `engine-architecture`, `hosted-backup-architecture`.
-    - *Snapshot* — explicitly point-in-time (e.g., `openspec-capability-catalog-snapshot`); drift is acceptable; refresh when the question being asked warrants it. Note "snapshot" in the body.
-- **insight** — distilled cross-cutting lesson under `Notes/Insights/`
-- **failure** — documented failure mode under `Notes/Failures/`
-- **pattern** — reusable cross-cutting pattern under `Notes/Patterns/`. Uses `projects:` (plural list) in frontmatter when the pattern applies across multiple products, e.g., `projects: [endstate, q, substrate]`.
-- **experiment** — primary experiment (hypothesis + protocol + data) under `Notes/Experiments/<domain>/`
-- **production-log** — creative artifact + production knowledge under `Notes/Productions/<medium>/`
-- **entity** — typed node under `Entities/<entity-type>/`
-
-Detailed spec for each: `references/page-types.md`. Frontmatter for each: `references/frontmatter.md`.
+- **source** — raw input, `Sources/<type>/`. Two flavors (same frontmatter): *transcript* (content as-is) and *origination record* (Claude-written session-reasoning capture, `ingested_into:` listing what it produced).
+- **research-note** — `Notes/Research/<scope>/`. Informal subtypes: *standard*; *hub* (orients a subsystem, links out; refresh on major ships); *snapshot* (point-in-time, drift OK, say "snapshot" in body).
+- **insight** — cross-cutting lesson, `Notes/Insights/`.
+- **failure** — failure mode, `Notes/Failures/`.
+- **pattern** — reusable pattern, `Notes/Patterns/`. Use `projects:` (plural) when it spans products.
+- **experiment** — hypothesis + protocol + primary data, `Notes/Experiments/<domain>/`.
+- **production-log** — creative artifact + production knowledge, `Notes/Productions/<medium>/`.
+- **entity** — typed node, `Entities/<entity-type>/` (People / Concepts / Libraries / Decisions).
 
 ### Research scope keys
 
@@ -389,7 +343,7 @@ For **patterns** that apply across multiple products, use `projects:` (plural li
 
 If you find yourself wanting a scope that isn't on this list, the writer auto-registers it (see below) — but pause to consider whether the new key is genuinely new or whether an existing key already fits. Avoid project-key sprawl: the typo guard catches single-/double-edit-distance mistakes, but doesn't catch *semantic* duplication of existing concepts under a new slug.
 
-**Auto-registration of new project keys.** The `note`, `replace`, `set_frontmatter_field`, and `link` (for decision entities) writers auto-append unknown slug-shaped project keys to `_Schema/project-keys.yaml` and create the matching `Notes/Research/<Folder>/` directory on first use — no manual YAML edit needed. The registration surfaces as a warning in the write response (`"Auto-registered project key 'X' (folder: 'Y')"`). Pass `project_category` on the call to land the new key under the right bucket (umbrella / product / activity / domain / situation / cross-cutting); when omitted, the key lands as `uncategorized` and Hugo can hand-edit later. A **typo guard** rejects new keys within Levenshtein distance ≤2 of any existing registered key — `helath` raises `PROJECT_KEY_TYPO` with `"Did you mean 'health'?"` so the agent can self-correct instead of polluting the registry with typos.
+**Auto-registration of new project keys.** The `note`, `replace`, `edit` (frontmatter-patch mode), and `link` (for decision entities) writers auto-append unknown slug-shaped project keys to `_Schema/project-keys.yaml` and create the matching `Notes/Research/<Folder>/` directory on first use — no manual YAML edit needed. The registration surfaces as a warning in the write response (`"Auto-registered project key 'X' (folder: 'Y')"`). Pass `project_category` on the call to land the new key under the right bucket (umbrella / product / activity / domain / situation / cross-cutting); when omitted, the key lands as `uncategorized` and Hugo can hand-edit later. A **typo guard** rejects new keys within Levenshtein distance ≤2 of any existing registered key — `helath` raises `PROJECT_KEY_TYPO` with `"Did you mean 'health'?"` so the agent can self-correct instead of polluting the registry with typos.
 
 ### Q tenants
 
@@ -406,12 +360,7 @@ If a tenant isn't on this list, surface it before assuming.
 
 ### Experiment vs production-log
 
-These are easy to confuse. Both are time-bounded, both have date-prefixed filenames, both can have outcomes. The difference:
-
-- **Experiment** = a hypothesis tested under a protocol with primary data (`Notes/Experiments/<domain>/`). Ends with a conclusion that confirms, refutes, or qualifies the hypothesis. E.g., "30-day dairy elimination → sinus inflammation."
-- **Production-log** = a creative artifact plus the production knowledge around it (`Notes/Productions/<medium>/`). Ends with engagement metrics and reflection — but the artifact's value is the artifact itself, not a finding. E.g., "May 2026 metabolism reels batch."
-
-When in doubt: did Hugo set out to learn whether X is true (experiment) or to make a thing the world will see (production)?
+Easy to confuse (both time-bounded, date-prefixed, with outcomes). **Experiment** = a hypothesis tested under a protocol with primary data (`Notes/Experiments/`); ends in confirm/refute/qualify. **Production-log** = a creative artifact + its production knowledge (`Notes/Productions/`); ends in engagement metrics + reflection, and the value is the thing made. Quick test: set out to *learn whether X is true* (experiment) or to *make a thing the world sees* (production)? Full treatment + the production-log-vs-research-note case in `references/page-types.md`.
 
 ## Workflow: typical add-then-compile session
 
@@ -458,24 +407,9 @@ Frozen things (Sources captures, decisions about past events) and KB-native cont
 
 ## Audit (lint) checks
 
-The **audit** operation runs the following checks and proposes fixes (never auto-fixes):
+The **audit** operation runs read-only checks and proposes fixes (never auto-fixes); the report is reviewed before anything is written. It covers: orphans, broken wikilinks, supersession integrity, stale frontmatter, `index.md`/`log.md` drift, aged unprocessed sources (oldest-first — pair with `propose_compilation`), status/location mismatch, unfinished experiments, stalled production lifecycles, stale hubs/snapshots, harness symlink integrity, unregistered project keys, embedding drift, and pending relevance pairs.
 
-- **Orphans** — compiled pages with zero inbound links and zero outbound links beyond their `sources` block. Propose: link or archive.
-- **Broken wikilinks** — `[[X]]` where `X` does not resolve. The audit skips wikilinks inside fenced code blocks and inline code spans (so `[[:space:]]` regex literals don't false-positive). Bare names resolve against filename stems AND frontmatter `title:` (so date-prefixed sources with a title match are not flagged); a link carrying an explicit non-`.md` extension (`[[…/scan.pdf]]`, `[[Domains/diagram.png]]`) resolves if that file exists on disk, matching Obsidian's attachment links. Findings inside append-only trees (`Sources/`, `Evidence/`) — which can't be repaired in place — are surfaced at `info` severity with `meta.immutable`, keeping them out of the actionable `warn` set. Propose: fix path or create stub entity.
-- **Supersession integrity** — pages marked `superseded` must have `superseded_by` pointing to a real page; pages marked `active` must not appear as the target of any `superseded_by`.
-- **Stale frontmatter** — required fields missing for the page type. Includes: research-notes with `tenant` set but `project` not equal to `q` (the `tenant` field is Q-only); patterns with `project:` (singular) when `projects:` (plural) is the convention for cross-project patterns.
-- **`index.md` / `log.md` drift** — files in folders that are not catalogued, catalogue entries pointing to missing files, or `log.md` entries without corresponding artifacts on disk (and vice versa).
-- **Unprocessed sources** — `Sources/` files with empty `ingested_into:`, now **aged and triaged oldest-first**: each finding carries `meta` (`age_days`, `age_bucket` ∈ fresh <30d / aging <90d / stale, `captured`) and escalates to `warn` once stale. Drain the worst rot first: pick a coherent set of the oldest, call **`propose_compilation(sources=[…])`** for a ready-to-fill scaffold (inferred note_type + outline + sources + adjacent connections), then compile via **note**. Grouping which sources belong in one note is your call — `propose_compilation` doesn't guess.
-- **Status / location mismatch** — pages with `status: archived` not living in an `_archive/` subfolder, and vice versa.
-- **Unfinished experiments** — experiments with `status: active` and `started` date older than the experiment's `duration` field. Propose: write up results, mark concluded, or extend.
-- **Unfinished production lifecycles** — production-logs with `status: recorded` or earlier whose `published` field has been null for >60 days. Propose: update status, fill outcomes, or move to dropped.
-- **Stale hubs / snapshots** — research-notes flagged as hub or snapshot with `updated:` older than threshold (default: 90 days for hubs, 30 days for snapshots). Propose: refresh or mark explicitly as historical.
-- **Harness symlink integrity** — `~/.claude/skills/knowledge-base/` is supposed to be a symlink to the local KB's `_Schema/` folder per rule 8. Check: `Get-Item <path> | Select-Object Target` (PowerShell) or `test -L <path> && readlink <path>` (Bash). If the path is a regular folder (not a symlink), or the target doesn't resolve, the symlink is broken — drift is back. Propose: re-run the symlink setup from rule 8. Cheap check; run on every audit.
-- **Unregistered project key** — pages with a `project:` or `projects:` value not in `_Schema/project-keys.yaml`. Catches drift from pre-typo-guard history or Tier 2 `create_file` escape-hatch writes that bypass the auto-register flow. Propose: fix the value via `set_frontmatter_field` (its typo guard will surface the intended key) or hand-add the new key to the YAML.
-- **Embedding drift** — sidecar rows whose row mtime is older than the on-disk file mtime (likely an Obsidian-side edit that bypassed kb-mcp's writer hooks). Propose: run `reconcile` (incremental, stale rows only) or `audit_fix(rebuild_embeddings=true)` (full wipe + rebuild) to refresh.
-- **Relevance pairs pending** — model-free join of `logs/queries.jsonl` × `logs/writes.jsonl`: counts `(query → cited_path)` labels from real usage (a `note`/`replace` that cited a path a recent `find()` had surfaced) that aren't yet in `tests/golden/queries.yaml`. Makes the retrieval feedback loop's unconfirmed backlog visible so it compounds instead of sitting idle. Propose: run `scripts/derive_relevance_pairs.py`, confirm pairs into the golden set, re-run `scripts/eval_retrieval.py`. Repo-global (not per-vault); gated by `KB_MCP_DISABLE_RELEVANCE_CHECK`.
-
-Audit is read-mostly. The output is a proposal report that the user reviews; nothing is rewritten without explicit confirmation per item or batch.
+Per-check detail — exactly what each flags, its severity, and the proposed fix — is in **`references/audit-checks.md`**. Read it when running or acting on an audit.
 
 ## What this skill does NOT do
 
@@ -512,5 +446,6 @@ Audit is read-mostly. The output is a proposal report that the user reviews; not
 - `references/write-scope.md` — full read-only / writeable path map
 - `references/supersession.md` — supersession protocol
 - `references/operations.md` — detailed per-operation specs
+- `references/audit-checks.md` — per-check detail for the audit operation
 
 Read each on first use. The SKILL.md you're reading now is the contract; the references are the manual.
