@@ -315,7 +315,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         rerank: bool = False,
         prefer_compiled: bool = True,
     ) -> list[dict]:
-        """Search the vault. Filters are AND'd; tag/project lists are OR'd within.
+        """Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within.
 
         Args:
             query: Free-text search string. In "hybrid"/"vector" mode it's
@@ -408,8 +408,8 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
         Closes the corpus-blind-write gap: surfaces the related prior work a
         draft (or an existing page) should connect to, so the graph gets denser
-        with every write instead of just bigger. Pure retrieval — it reuses the
-        same hybrid ranker as `find`, prefers well-connected hubs, and excludes
+        with every write instead of just bigger. For link suggestions only — it
+        reuses the same hybrid ranker as `find`, prefers well-connected hubs, and excludes
         the page itself plus anything it already links. Suggestions are
         non-binding: YOU decide which to wire in (e.g. via a follow-up `edit`).
 
@@ -659,7 +659,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
     @mcp.tool
     def audit(categories: list[str] | None = None) -> dict:
-        """Read-only health check across the Knowledge Base.
+        """Audit / lint / health-check the Knowledge Base: find orphans, broken wikilinks, supersession gaps, and stale unprocessed sources. Read-only.
 
         Returns a structured report Claude can read to propose follow-up
         edits via `note`/`add`. Does NOT modify anything.
@@ -793,7 +793,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         value: str | None = None,
         path: str | None = None,
     ) -> dict:
-        """Scan note bodies for `<!-- key:value -->` provenance tags. Read-only.
+        """Trace provenance: scan note bodies for `<!-- key:value -->` tags — where an opinion/take/flag came from. Read-only.
 
         On-demand scan over markdown bodies — no index, no sidecar. Use it to
         answer "show all conv:-derived takes" or "what's flagged add-to-imdb"
@@ -827,7 +827,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         sources: list[str],
         suggested_title: str | None = None,
     ) -> dict:
-        """Draft a compiled-note scaffold from unprocessed source(s). Read-only.
+        """Draft / scaffold a compiled note from unprocessed source(s) — what to compile next, drain the source backlog. Read-only.
 
         The backlog-drain companion to `audit`'s `unprocessed_source` findings:
         point it at one or more raw sources and it hands back a ready-to-fill
@@ -863,7 +863,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
     @mcp.tool
     def get(path: str) -> dict:
-        """Read a full vault file by path. Returns frontmatter + body + raw content.
+        """Read / open / fetch / load the full contents of a KB or vault page by path. Returns frontmatter + body + raw content.
 
         Reads anywhere under the vault root — not just `Knowledge Base/`.
         This lets you cite from Hugo's curated trees (`Cognitive Core/`,
@@ -1374,8 +1374,17 @@ def build_server(*, require_auth: bool) -> FastMCP:
     # - Cognitive Core/, Domains/, Prompt Bank/, Products/, Personal Context/
     #   are write-protected by default; pass `allow_curated=true` to override.
     # - Every write logs to Knowledge Base/log.md.
+    #
+    # Tier 2 is opt-out: setting KB_MCP_DISABLE_TIER2 drops these 12 escape-hatch
+    # tools from the registered surface, shrinking the deferred-tool list a client
+    # must keyword-search to reach the Tier 1 read/write ops. The functions are
+    # still defined either way; `tier2_tool` only decides whether to register.
+    _expose_tier2 = not os.environ.get("KB_MCP_DISABLE_TIER2")
 
-    @mcp.tool
+    def tier2_tool(fn):
+        return mcp.tool(fn) if _expose_tier2 else fn
+
+    @tier2_tool
     def create_file(
         path: str,
         content: str,
@@ -1426,7 +1435,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def list_directory(
         path: str = "",
         recursive: bool = False,
@@ -1461,7 +1470,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def create_directory(
         path: str,
         parents: bool = True,
@@ -1493,7 +1502,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def move_file(
         old_path: str,
         new_path: str,
@@ -1533,7 +1542,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def delete_file(
         path: str,
         confirm: bool,
@@ -1595,7 +1604,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def delete_directory(
         path: str,
         confirm: bool,
@@ -1646,7 +1655,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def append_to_file(
         path: str,
         content: str,
@@ -1679,7 +1688,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def get_frontmatter(path: str) -> dict:
         """Tier 2: read only the frontmatter of a file. Read-only.
 
@@ -1701,7 +1710,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def set_frontmatter_field(
         path: str,
         field: str,
@@ -1743,7 +1752,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def list_trash(date: str | None = None) -> dict:
         """Tier 2: enumerate recoverable trash entries. Read-only.
 
@@ -1764,7 +1773,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
         result = list_trash_module.list_trash(vault_root, date=date)
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def recover_from_trash(
         trash_path: str,
         restore_path: str | None = None,
@@ -1805,7 +1814,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
             raise ValueError(f"{e.code}: {e.reason}") from e
         return result.as_dict()
 
-    @mcp.tool
+    @tier2_tool
     def list_inbound_links(target: str) -> dict:
         """Tier 2: find files whose wikilinks resolve to `target`. Read-only.
 

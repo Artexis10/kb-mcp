@@ -2,7 +2,7 @@
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
 metadata:
-  version: 0.13.0
+  version: 0.13.1
 ---
 
 # Knowledge Base
@@ -62,6 +62,34 @@ The Knowledge Base does not replace those curated trees. It is a parallel substr
 - Laptop: `/path/to/your/vault` (Windows `<your-vault>`)
 
 Both paths are enrolled in `Q_MNT_ALLOWLIST` in `~/.claude/hooks/user-bash-guard.sh` (yadm-tracked). If the relevant path doesn't resolve on the current machine, you're on the other one — try the alternate. Verify allowed filesystem paths before writing.
+
+## Loading the tools
+
+The KB tools may be **deferred** — the client lists them by name and you load a
+tool's schema before you can call it. Two habits keep that from costing extra
+round-trips:
+
+1. **Load the core set up front, in one shot.** You'll almost always need
+   `find` (search), `get` (read a page), and one or more of `note`, `add`,
+   `link`, `suggest_links`, `edit`, `audit`. In Claude Code, load them by exact
+   name in a single call — this skips relevance ranking entirely:
+
+   `ToolSearch("select:find,get,note,add,link,suggest_links,edit,audit")`
+
+   On clients without a `select:` syntax (e.g. claude.ai), search by capability
+   — "search the knowledge base", "read a KB page", "compile a note" — and each
+   resolves to the right tool. Don't keep re-searching for `find`; it's the
+   read-only hybrid (semantic + keyword) search and your default entry point.
+
+2. **Pick one server, not both.** This KB is exposed by two identical
+   connectors — **Knowledge Base** (desktop) and **Knowledge Base (Laptop)**.
+   They front the same vault per machine. Use the one whose vault path resolves
+   on the current machine (see the machine note above); don't fan the same call
+   out to both.
+
+Reach for the Tier 2 filesystem ops only when no Tier 1 op fits — and note they
+may be turned off on lean deployments (`KB_MCP_DISABLE_TIER2`), in which case
+only the Tier 1 ops below are registered.
 
 ## Operations
 
