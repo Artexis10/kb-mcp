@@ -316,25 +316,16 @@ For the full read-only/write-target map see `references/write-scope.md`.
 
 ## Page types
 
-Eight page types live under `Knowledge Base/`. Each has a required frontmatter shape, writing conventions, and naming rules.
+Eight page types under `Knowledge Base/`, each with a required frontmatter shape, naming rule, and location. **Full per-type spec + content shapes: `references/page-types.md`; frontmatter: `references/frontmatter.md`.** The behaviorally-load-bearing distinctions:
 
-- **source** — raw input under `Sources/<type>/`. **Two flavors:**
-    - *Transcript* — content the user provided (pasted conversation, captured article, book excerpt). The source captures content as-is.
-    - *Origination record* — Claude-written session capture documenting the reasoning behind what was compiled in a session, with `ingested_into:` listing every downstream artifact the session produced. Used when a single conversation produces multiple compiled artifacts and the session itself is the reasoning trail.
-    
-    Both flavors share the same frontmatter shape; the body content differs.
-- **research-note** — compiled, project-or-domain-scoped research under `Notes/Research/<scope>/`. **Informal subtypes (not separate page types):**
-    - *Standard* — synthesised research on a topic.
-    - *Hub* — orients around a major subsystem or workstream, linking out extensively. Refresh on major capability ships. E.g., `tu-operational-system`, `engine-architecture`, `hosted-backup-architecture`.
-    - *Snapshot* — explicitly point-in-time (e.g., `openspec-capability-catalog-snapshot`); drift is acceptable; refresh when the question being asked warrants it. Note "snapshot" in the body.
-- **insight** — distilled cross-cutting lesson under `Notes/Insights/`
-- **failure** — documented failure mode under `Notes/Failures/`
-- **pattern** — reusable cross-cutting pattern under `Notes/Patterns/`. Uses `projects:` (plural list) in frontmatter when the pattern applies across multiple products, e.g., `projects: [endstate, q, substrate]`.
-- **experiment** — primary experiment (hypothesis + protocol + data) under `Notes/Experiments/<domain>/`
-- **production-log** — creative artifact + production knowledge under `Notes/Productions/<medium>/`
-- **entity** — typed node under `Entities/<entity-type>/`
-
-Detailed spec for each: `references/page-types.md`. Frontmatter for each: `references/frontmatter.md`.
+- **source** — raw input, `Sources/<type>/`. Two flavors (same frontmatter): *transcript* (content as-is) and *origination record* (Claude-written session-reasoning capture, `ingested_into:` listing what it produced).
+- **research-note** — `Notes/Research/<scope>/`. Informal subtypes: *standard*; *hub* (orients a subsystem, links out; refresh on major ships); *snapshot* (point-in-time, drift OK, say "snapshot" in body).
+- **insight** — cross-cutting lesson, `Notes/Insights/`.
+- **failure** — failure mode, `Notes/Failures/`.
+- **pattern** — reusable pattern, `Notes/Patterns/`. Use `projects:` (plural) when it spans products.
+- **experiment** — hypothesis + protocol + primary data, `Notes/Experiments/<domain>/`.
+- **production-log** — creative artifact + production knowledge, `Notes/Productions/<medium>/`.
+- **entity** — typed node, `Entities/<entity-type>/` (People / Concepts / Libraries / Decisions).
 
 ### Research scope keys
 
@@ -369,12 +360,7 @@ If a tenant isn't on this list, surface it before assuming.
 
 ### Experiment vs production-log
 
-These are easy to confuse. Both are time-bounded, both have date-prefixed filenames, both can have outcomes. The difference:
-
-- **Experiment** = a hypothesis tested under a protocol with primary data (`Notes/Experiments/<domain>/`). Ends with a conclusion that confirms, refutes, or qualifies the hypothesis. E.g., "30-day dairy elimination → sinus inflammation."
-- **Production-log** = a creative artifact plus the production knowledge around it (`Notes/Productions/<medium>/`). Ends with engagement metrics and reflection — but the artifact's value is the artifact itself, not a finding. E.g., "May 2026 metabolism reels batch."
-
-When in doubt: did Hugo set out to learn whether X is true (experiment) or to make a thing the world will see (production)?
+Easy to confuse (both time-bounded, date-prefixed, with outcomes). **Experiment** = a hypothesis tested under a protocol with primary data (`Notes/Experiments/`); ends in confirm/refute/qualify. **Production-log** = a creative artifact + its production knowledge (`Notes/Productions/`); ends in engagement metrics + reflection, and the value is the thing made. Quick test: set out to *learn whether X is true* (experiment) or to *make a thing the world sees* (production)? Full treatment + the production-log-vs-research-note case in `references/page-types.md`.
 
 ## Workflow: typical add-then-compile session
 
