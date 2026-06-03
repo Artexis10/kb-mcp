@@ -35,6 +35,14 @@ The routing encodes the discipline.
 express what you need: new folder structures (`Identity/`, `Templates/`),
 files outside the typed-note set, or surgical edits.
 
+> **Lean surface (`KB_MCP_DISABLE_TIER2`).** Set `KB_MCP_DISABLE_TIER2=1` (in
+> `.env` or the service environment) to drop all 12 Tier 2 tools from
+> registration; the 16 Tier 1 ops still load. Use it when the client *defers*
+> MCP tools behind a keyword search — a smaller surface means an agent reaches
+> `find`/`get`/`note` without first wading past a dozen escape hatches (and,
+> with two connectors registered, the surface is doubled). Default is unset:
+> all tools register, preserving current behaviour.
+
 - `create_file` — write a file at an arbitrary vault path, optional
   frontmatter dict. Refuses Sources/Evidence; curated trees require
   `allow_curated=true`.

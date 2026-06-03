@@ -821,3 +821,50 @@ def test_list_inbound_links_returns_empty_for_unreferenced(vault: Path) -> None:
         target="Knowledge Base/Notes/Insights/totally-orphan-xyz123.md",
     )
     assert result.count == 0
+
+
+# ---------------- Tier 2 registration gating (KB_MCP_DISABLE_TIER2) ----------------
+
+TIER2_TOOLS = {
+    "create_file", "create_directory", "list_directory", "move_file",
+    "delete_file", "delete_directory", "append_to_file", "get_frontmatter",
+    "set_frontmatter_field", "list_trash", "recover_from_trash",
+    "list_inbound_links",
+}
+
+
+def _registered_tool_names(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Build the FastMCP server and return the set of registered tool names.
+
+    build_server() calls load_dotenv(override=True); neutralize it so the repo
+    `.env` can't clobber the test's KB_MCP_VAULT_PATH / KB_MCP_DISABLE_TIER2.
+    """
+    import asyncio
+
+    from kb_mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "load_dotenv", lambda *a, **k: None)
+    mcp = server_module.build_server(require_auth=False)
+    tools = asyncio.run(mcp.list_tools(run_middleware=False))
+    return {t.name for t in tools}
+
+
+def test_tier2_registered_by_default(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KB_MCP_DISABLE_TIER2", raising=False)
+    names = _registered_tool_names(monkeypatch)
+    # Tier 1 read/write ops are always present...
+    assert {"find", "get", "note", "add", "edit", "audit"} <= names
+    # ...and so are the Tier 2 escape hatches when the flag is unset.
+    assert TIER2_TOOLS <= names
+
+
+def test_tier2_dropped_when_disabled(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KB_MCP_DISABLE_TIER2", "1")
+    names = _registered_tool_names(monkeypatch)
+    # Tier 1 stays fully registered — only the escape hatches drop.
+    assert {"find", "get", "note", "add", "edit", "audit", "link"} <= names
+    assert names.isdisjoint(TIER2_TOOLS)
