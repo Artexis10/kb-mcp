@@ -30,7 +30,7 @@ These appear on every page type:
 
 | Field | Required | Notes |
 |---|---|---|
-| `project` | yes | one of: `substrate`, `q`, `endstate`, `sift`, `tu`, `book-club`, `health`, `finance`, `creative`, `science`, `travel`, `personal` |
+| `project` | yes | a slug-shaped project key; unknown keys **auto-register on first use** (typo-guarded), so this is the current set, not a closed enum: `substrate`, `q`, `endstate`, `sift`, `tu`, `book-club`, `health`, `finance`, `creative`, `science`, `travel`, `personal` |
 | `tenant` | optional | for Q tenants only — current values: `example-tenant`, `tu`. See SKILL.md § Q tenants for the dual role of `tu`. |
 | `sources` | yes | list of wikilinks to `Sources/` files this note draws from |
 | `supersedes` | optional | wikilink to the page this one replaces |

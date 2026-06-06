@@ -38,7 +38,7 @@ For long sources, it's fine to capture an excerpt + URL rather than full text. F
 
 ## research-note
 
-**Location:** `Notes/Research/<scope>/` where scope is one of: `Substrate`, `Q`, `Endstate`, `Sift`, `Together Unprocessed`, `Health`, `Finance`, `Creative`, `Science`, `Travel`, `Book Club`. (Personal/cross-cutting research can use a research-note with `project: personal` and live in any of these folders, or be elevated to an Insight or Pattern if it's truly cross-cutting.)
+**Location:** `Notes/Research/<scope>/` where scope is one of: `Substrate`, `Q`, `Endstate`, `Sift`, `Together Unprocessed`, `Health`, `Finance`, `Creative`, `Science`, `Travel`, `Book Club` — the current set, **not a closed enum**: new scopes auto-register on first use when you write with a new `project:` slug. (Personal/cross-cutting research can use a research-note with `project: personal` and live in any of these folders, or be elevated to an Insight or Pattern if it's truly cross-cutting.)
 **Naming:** `<topic-slug>.md` — concise, dash-separated, lowercase. No date prefix (research notes evolve).
 **Mutability:** Editable. Replace via supersession when a major rewrite is needed.
 **Required frontmatter:** `type: research-note`, `project`, `status`, `created`, `updated`, `sources`, `tags`. Optional: `supersedes`, `superseded_by`, `tenant` (for Q tenants — see SKILL.md § Q tenants).

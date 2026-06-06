@@ -2,7 +2,7 @@
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
 metadata:
-  version: 0.14.0
+  version: 0.14.2
 ---
 
 # Knowledge Base

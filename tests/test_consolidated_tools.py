@@ -179,3 +179,31 @@ def test_delete_detects_directory(vault: Path, monkeypatch) -> None:
     })
     assert "file_count" in out  # directory-shaped result
     assert not d.exists()
+
+
+# ---------------- note: project key description is dynamic + open ----------------
+
+def test_note_project_description_is_dynamic_and_open(vault: Path, monkeypatch) -> None:
+    """The `note` tool schema must advertise the live project-key set + the
+    auto-register contract, not a frozen closed list.
+
+    Regression: claude.ai burned reasoning cycles (and nearly misfiled a note)
+    treating an unlisted scope like `home` as illegal, because the docstring
+    listed a fixed `Valid: ...` enum with no hint that keys auto-register.
+    """
+    mcp = _build(monkeypatch)
+    tool = asyncio.run(mcp.get_tool("note"))
+    project_desc = tool.parameters["properties"]["project"]["description"]
+    projects_desc = tool.parameters["properties"]["projects"]["description"]
+
+    # The sentinel must be fully substituted at registration time.
+    assert "__PROJECT_KEYS_HINT__" not in project_desc
+    assert "__PROJECT_KEYS_HINT__" not in projects_desc
+    # Open-set framing: the model must know unlisted keys are legal.
+    assert "auto-register" in project_desc.lower()
+    assert "not exhaustive" in project_desc.lower()
+    assert "auto-register" in projects_desc.lower()
+    # The list is sourced from the live registry (fixture falls back to the
+    # built-in set, which includes these), not a hand-maintained string.
+    assert "substrate" in project_desc
+    assert "personal" in project_desc
