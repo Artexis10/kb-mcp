@@ -345,11 +345,13 @@ Writes:
 - `Knowledge Base/log.md` — prepends `## [<date>] note | Notes/...` entry.
 
 `note_type ∈ {research-note, insight, failure, pattern, experiment,
-production-log}`. `project` (singular) is required for research-note;
-valid keys: `substrate, q, endstate, sift, tu, book-club, health,
-finance, creative, science, travel, personal`. `projects` (plural) is
-optional for insight/failure/pattern/production-log. Per-type
-conditional fields:
+production-log}`. `project` (singular) is required for research-note.
+Project keys are an open set: unknown slug-shaped keys auto-register on
+first write (typo-guarded) into `_Schema/project-keys.yaml`. Current
+keys (not exhaustive): `substrate, q, endstate, sift, tu, book-club,
+health, finance, creative, science, travel, personal`. `projects`
+(plural) is optional for insight/failure/pattern/production-log.
+Per-type conditional fields:
 
 | Type | Required extras | Optional extras | Status enum |
 |---|---|---|---|

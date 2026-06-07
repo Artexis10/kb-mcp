@@ -54,6 +54,7 @@ from . import move_file as move_file_module
 from . import multi_edit as multi_edit_module
 from . import note as note_module
 from . import preserve as preserve_module
+from . import project_keys as project_keys_module
 from . import provenance as provenance_module
 from . import query_log
 from . import reconcile as reconcile_module
@@ -224,6 +225,12 @@ def build_server(*, require_auth: bool) -> FastMCP:
     log.info(
         "vault=%s source_types=%s", vault_root, source_schema.source_types
     )
+
+    # The project-key set is open and auto-grows (project_keys.register_project_key
+    # appends unknown slugs on first write). Read the live list here so the tool
+    # schemas advertise the *current* keys + the auto-register contract, instead
+    # of a frozen docstring list that drifts. Re-read on each server start.
+    project_keys_hint = project_keys_module.keys_hint(vault_root)
 
     # Preload bge-base so the first hybrid query in this process is fast
     # (otherwise the HF-Hub HEAD redirects + tokenizer load happen on the
@@ -535,7 +542,6 @@ def build_server(*, require_auth: bool) -> FastMCP:
         query_log.log_write_call(tool="add", written_path=result.path, cited_sources=[])
         return result.as_dict()
 
-    @mcp.tool
     def note(
         content: str,
         note_type: str,
@@ -606,11 +612,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 experiment, production-log.
             title: Human title; used to derive a kebab-case filename slug.
                 Experiments and production-logs auto-prefix with YYYY-MM.
-            project: REQUIRED for research-note. Valid: substrate, q, endstate,
-                sift, tu, book-club, health, finance, creative, science, travel,
-                personal.
+            project: REQUIRED for research-note. __PROJECT_KEYS_HINT__
             projects: List of project keys (plural). Optional for insight,
-                failure, pattern, production-log. Must contain only valid keys.
+                failure, pattern, production-log. __PROJECT_KEYS_HINT__
             sources: Vault-relative wikilinks to existing pages this note draws
                 from, e.g. `["Knowledge Base/Sources/Articles/2026-05-18-foo"]`
                 or `["[[Knowledge Base/Sources/Articles/2026-05-18-foo]]"]`.
@@ -671,6 +675,13 @@ def build_server(*, require_auth: bool) -> FastMCP:
             tool="note", written_path=result.path, cited_sources=sources
         )
         return result.as_dict()
+
+    # Inject the live project-key list/contract into the schema the model sees,
+    # then register. Done post-definition (not via `@mcp.tool`) because the hint
+    # is computed at runtime; `mcp.tool(fn)` is exactly what the bare decorator
+    # does. `.replace` (not `.format`) — the docstring has literal `{...}` braces.
+    note.__doc__ = note.__doc__.replace("__PROJECT_KEYS_HINT__", project_keys_hint)
+    mcp.tool(note)
 
     @mcp.tool
     def audit(categories: list[str] | None = None) -> dict:
@@ -1223,7 +1234,8 @@ def build_server(*, require_auth: bool) -> FastMCP:
         - `library`  → Entities/Libraries/. Optional: `language`, `repo`,
           `license`, `used_in` (list of projects).
         - `decision` → Entities/Decisions/. Optional: `decided` (YYYY-MM-DD),
-          `project` (project key), `decision_status` ∈ {proposed, accepted,
+          `project` (project key — any slug; unknown keys auto-register on first
+          use, same as `note`), `decision_status` ∈ {proposed, accepted,
           superseded}.
 
         v1 is create-only. If the entity file already exists, returns

@@ -120,6 +120,26 @@ def load_project_registry(vault_root: Path) -> ProjectRegistry:
     )
 
 
+def keys_hint(vault_root: Path) -> str:
+    """One-line, LLM-facing description of the live project-key set.
+
+    Read at tool-registration time so the `note`/`link` tool schemas advertise
+    the *current* keys instead of a frozen list that drifts out of sync with the
+    YAML. The set is open — unknown slug-shaped keys auto-register on first write
+    (see `register_project_key`) — so this is framed as non-exhaustive to stop
+    the agent from treating a new scope as illegal. Single line (no newlines) so
+    it survives Google-docstring parsing as one parameter description.
+    """
+    registry = load_project_registry(vault_root)
+    keys = ", ".join(registry.keys) or "(none yet)"
+    return (
+        "Any slug-shaped key is accepted; unknown keys auto-register on first "
+        "use (a typo guard rejects near-misses within edit distance 2 of an "
+        "existing key) and create the matching Notes/Research/<Folder>/. Pass "
+        f"project_category to bucket a new key. Current keys (not exhaustive): {keys}."
+    )
+
+
 def _fallback_registry() -> ProjectRegistry:
     return ProjectRegistry(
         project_to_folder=dict(_FALLBACK_PROJECTS),
