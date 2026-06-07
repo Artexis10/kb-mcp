@@ -25,6 +25,38 @@ function Wait-ServiceState {
     }
 }
 
+# --- Self-heal the interpreter ------------------------------------------------
+# Kaspersky periodically quarantines the uv-managed python.exe as a false
+# positive. That leaves the venv (and this service) with no interpreter, so the
+# app can't start and NSSM parks the service in PAUSED — which surfaces as a 502
+# at the Tailscale funnel. If the venv interpreter won't run, reinstall it
+# before (re)starting. Add a Kaspersky exclusion for %APPDATA%\uv\python to stop
+# the quarantine at the source; this just makes recovery automatic.
+$RepoRoot  = Split-Path -Parent $PSScriptRoot
+$VenvPy    = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$PyvenvCfg = Join-Path $RepoRoot ".venv\pyvenv.cfg"
+
+function Test-VenvInterpreter {
+    if (-not (Test-Path $VenvPy)) { return $false }
+    try { & $VenvPy --version 2>$null | Out-Null; return ($LASTEXITCODE -eq 0) }
+    catch { return $false }
+}
+
+if (-not (Test-VenvInterpreter)) {
+    Write-Warning "venv interpreter not runnable (Kaspersky quarantine?) - reinstalling..."
+    $pyVer = $null
+    if (Test-Path $PyvenvCfg) {
+        $hit = Select-String -Path $PyvenvCfg -Pattern 'version_info\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)'
+        if ($hit) { $pyVer = $hit.Matches[0].Groups[1].Value }
+    }
+    # `uv python install` is a no-op if a partial dir exists, so force --reinstall.
+    if ($pyVer) { uv python install $pyVer --reinstall } else { uv python install --reinstall }
+    if (-not (Test-VenvInterpreter)) {
+        throw "Interpreter still not runnable after reinstall. Check Kaspersky Quarantine and add an exclusion for $env:APPDATA\uv\python, then retry."
+    }
+    Write-Host "  interpreter restored."
+}
+
 Write-Host "Stopping $ServiceName..."
 sc.exe stop $ServiceName | Out-Null
 Wait-ServiceState -Name $ServiceName -Target 'Stopped'
