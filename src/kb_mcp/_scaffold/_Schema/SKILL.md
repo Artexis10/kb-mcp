@@ -33,6 +33,7 @@ This skill is **context-aware, not just request-driven.** It engages on its own 
 - A durable conclusion → draft the compiled **note**/**link**, run **suggest_links** + the near-duplicate check first, write it under the **standing waiver** (don't ask per-note), then report one line: `Saved → <path>`.
 - The guardrails that remain are the ones that matter: dedupe (prefer **edit**/**replace** over a parallel page; surface a near-duplicate `warning` when it fires — that's a hit worth surfacing) and clean links. The per-write approval is waived, not the integrity checks.
 - Still pause and ask **only** when type/scope is genuinely ambiguous (research vs insight vs experiment; which `Notes/Research/<scope>`; Q-vs-tenant) — the one-line questions from "When to ask vs. when to proceed" still apply.
+- **If the write fails** (connector down, 401/502, service issue): on a *proactive* capture, fail soft — one line ("couldn't save: <reason>") and keep going; the content's still in the thread to retry, and a side-channel write must never block the substantive answer. On an *explicit* "save this," don't just move on — diagnose (401 = connection-side, 502 = service down) and retry or fall back to the desktop filesystem write, or say plainly it didn't land. Proactive writes degrade quietly; requested writes are never silently dropped.
 
 Not a stepping-stone: mid-thought exploration, brainstorm tangents, unresolved questions, things Hugo is still weighing. Capture at the landing, not during the flight.
 
