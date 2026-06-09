@@ -1,8 +1,7 @@
 ---
 name: knowledge-base
-description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their knowledge base, vault, KB, Obsidian, notes, or "my docs," including oblique phrasings ("interesting, save it," "I want to remember this") when context implies a KB operation. Also engages proactively, without being told: consults the KB for prior conclusions whenever the conversation touches a project, domain, decision, person, or topic it likely covers, and captures durable conclusions when the conversation reaches a stepping-stone (an agreement, decision, solved problem, diagnosed failure, or recognized pattern). Do NOT trigger for operations on parts of the vault outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs to this skill, never write targets.
-metadata:
-  version: 0.15.0
+description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their KB, vault, Obsidian, or notes — including oblique phrasings ("interesting, save it," "I want to remember this"). Also engages proactively, without being told: consults the KB for prior conclusions when a turn touches a project, domain, decision, or topic it likely covers, and captures durable conclusions when the conversation reaches a stepping-stone (agreement, decision, solved problem, diagnosed failure, or recognized pattern). Do NOT trigger for writes outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs.
+version: 0.15.0
 ---
 
 # Knowledge Base
