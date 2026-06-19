@@ -27,10 +27,9 @@ Is the artifact something you reason from (input to your thinking)?
 
 **Worked examples:**
 
-- A PDF you found about EGCG dosing that informs the cancer experiment → `Sources/Articles/_attachments/` with a markdown capture in `Sources/Articles/`. You reason from it.
-- The clinical protocol document you authored and shared with the oncology team → `Notes/Experiments/Health/_attachments/`. Your experiment produced it.
-- The Estonian consilium document received from the medical board → `Evidence/Mother Cancer/01 - Clinical Documentation/`. Third party, preserve as-received.
-- A formal warning letter from your employer → `Evidence/Yolo/01 - Warning Letter .../`. Third party, preserve as-received.
+- An article or PDF you found that informs a project → `Sources/Articles/_attachments/` with a markdown capture in `Sources/Articles/`. You reason from it.
+- A protocol or document you authored and shared with a collaborator → `Notes/<...>/_attachments/`. Your work produced it.
+- An official document received from a third party (a board, an agency, an employer) → `Evidence/<scope>/`. Third party, preserve as-received.
 - A Sources/Sessions transcript of a Claude conversation → not a binary case; lives as markdown in `Sources/Sessions/` directly.
 
 **Why this matters:** mixing layers dilutes their epistemic discipline. Evidence binaries reasoned over become "sources we lightly analysed," losing the as-received guarantee. Source binaries treated as outputs lose the audit trail of what you read. Note outputs dropped in Evidence pretend to come from outside when they came from you. Keep the layers honest and the categories stay useful.

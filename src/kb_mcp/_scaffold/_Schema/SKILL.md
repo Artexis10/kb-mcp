@@ -73,14 +73,10 @@ Not a stepping-stone: mid-thought exploration, brainstorm tangents, unresolved q
 │   └── Decisions/
 └── Evidence/
     └── <scope>/                  Per-incident binary/document/factual preservation
-                                  (e.g., Evidence/Yolo/, Evidence/Mother Cancer/)
+                                  (e.g., Evidence/Legal/, Evidence/Medical/)
 ```
 
-`<vault>` resolves to the Obsidian vault root. Path differs by machine. From WSL (where Claude Code runs), use these forms:
-- Desktop: `/path/to/your/vault` (Windows `<your-vault>`)
-- Laptop: `/path/to/your/vault` (Windows `<your-vault>`)
-
-Both paths are enrolled in `Q_MNT_ALLOWLIST` in `~/.claude/hooks/user-bash-guard.sh` (yadm-tracked). If the relevant path doesn't resolve on the current machine, you're on the other one — try the alternate. Verify allowed filesystem paths before writing.
+`<vault>` resolves to your Obsidian vault root — the folder that contains `Knowledge Base/`, set via `KB_MCP_VAULT_PATH`. Verify allowed filesystem paths before writing.
 
 ## Loading the tools
 
@@ -281,6 +277,8 @@ The KB serves two complementary purposes:
 
 Both are first-class. When orienting a new project area, descriptive hubs typically come first; patterns and insights extract from the descriptive substrate as second-order knowledge.
 
+**Boundary with the repo (code projects).** For a software project the repository is the source of truth for code, design, and decisions — especially one with governance (OpenSpec, CLAUDE.md/AGENTS.md, ADRs, `design.md`). KB coverage of it is the cross-session/cross-project layer the repo can't hold — strategy, roadmap, orientation, hard-won empirical findings — **never** a condensed changelog or a restatement of what specs/conventions/commits already capture. Litmus test before writing: if the content belongs in a spec, an ADR, a commit message, or CLAUDE.md, write it *there*; and if that home doesn't exist yet, the fix is usually to create it in the repo, not to let the KB become a shadow spec.
+
 Descriptive hubs naturally drift — the system evolves; the hub becomes stale. Acceptable for snapshots (refresh when the question warrants it); for architecture hubs, refresh on major capability ships.
 
 ## Write discipline
@@ -368,18 +366,9 @@ If you find yourself wanting a scope that isn't on this list, the writer auto-re
 
 **Auto-registration of new project keys.** The `note`, `replace`, `edit` (frontmatter-patch mode), and `link` (for decision entities) writers auto-append unknown slug-shaped project keys to `_Schema/project-keys.yaml` and create the matching `Notes/Research/<Folder>/` directory on first use — no manual YAML edit needed. The registration surfaces as a warning in the write response (`"Auto-registered project key 'X' (folder: 'Y')"`). Pass `project_category` on the call to land the new key under the right bucket (umbrella / product / activity / domain / situation / cross-cutting); when omitted, the key lands as `uncategorized` and Hugo can hand-edit later. A **typo guard** rejects new keys within Levenshtein distance ≤2 of any existing registered key — `helath` raises `PROJECT_KEY_TYPO` with `"Did you mean 'health'?"` so the agent can self-correct instead of polluting the registry with typos.
 
-### Q tenants
+### Tenants (multi-tenant projects)
 
-Q is a multi-tenant platform. When research is about a specific Q tenant, set `project: q` and add `tenant: <key>`. Current tenants:
-
-- `example-tenant` — an example client's knowledge platform
-- `tu` — Together, Unprocessed (the TU podcast also runs on Q)
-
-**Disambiguating `tu`:** the same key `tu` is used both as a top-level project (when research is about the podcast as content/activity — episodes, guests, audience, narrative) and as a Q tenant key (when research is about TU's deployment on the Q platform — infrastructure, configuration, integrations). Disambiguate by the `project` field:
-- `project: tu` → about the podcast as activity
-- `project: q, tenant: tu` → about TU as a Q tenant deployment
-
-If a tenant isn't on this list, surface it before assuming.
+If a project is a multi-tenant platform, set `project: <key>` and add `tenant: <tenant-key>` to scope research to one tenant. Surface an unknown tenant before assuming.
 
 ### Experiment vs production-log
 

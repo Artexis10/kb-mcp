@@ -11,3 +11,7 @@ analysis/
 dist/
 build/
 *.egg-info/
+
+# Local-only genericize inputs for genericize-schema.py (real personal tokens).
+scripts/generic/leakguard.txt
+scripts/generic/substitutions.txt
