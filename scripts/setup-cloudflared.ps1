@@ -110,9 +110,24 @@ if ($svc) {
 }
 Write-Host "Installing cloudflared service..."
 & $CloudflaredExe service install | Write-Host
+Start-Sleep -Seconds 1
+
+# `cloudflared service install` (no token) registers a BARE ImagePath (just the exe, no
+# `tunnel run`/`--config`), so the service launches cloudflared with no command and dies
+# with exit 1067. Point the service at our config explicitly — the documented Windows fix.
+$svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared"
+$imagePath = '"{0}" --config "{1}" tunnel run' -f $CloudflaredExe, $ConfigPath
+Set-ItemProperty -Path $svcKey -Name ImagePath -Value $imagePath
+Write-Host "Service command: $imagePath"
+
 Set-Service -Name "cloudflared" -StartupType Automatic
-Start-Service -Name "cloudflared"
-Start-Sleep -Seconds 2
+try { Restart-Service -Name "cloudflared" -ErrorAction Stop }
+catch { Start-Service -Name "cloudflared" -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 3
+if ((Get-Service cloudflared).Status -ne 'Running') {
+    Write-Warning "cloudflared is not Running. See the real error by running it foreground:"
+    Write-Warning "  & `"$CloudflaredExe`" --config `"$ConfigPath`" tunnel run"
+}
 
 Write-Host ""
 Write-Host "Tunnel '$TunnelName' ($Uuid) -> https://$Hostname -> http://127.0.0.1:$Port"
