@@ -1,10 +1,11 @@
 """install-hook (installer) + the capture (Stop) and retrieval (UserPromptSubmit)
 nudge hooks.
 
-The hooks are the reliability fix for the KB loop: skill prose is passive, so
-Stop re-arms "capture this stepping-stone" (write) and UserPromptSubmit re-arms
-"consult the KB first" (read). Both are language-agnostic (structural gate +
-cooldown, no English keywords) so they work on Japanese and every other language.
+The hooks are the reliability fix for the KB loop: skill prose is passive, so Stop
+re-arms "capture this stepping-stone" (write) and UserPromptSubmit re-arms "consult
+the KB first" (read). Both are language-agnostic (structural gate + cooldown). The
+registered command is machine-agnostic (`bash ~/.claude/hooks/<name>.sh`) so a
+yadm-synced ~/.claude works across Windows / WSL / Linux / macOS.
 """
 
 from __future__ import annotations
@@ -31,17 +32,28 @@ def _ups_cmds(data: dict) -> list[str]:
     return [h["command"] for g in data["hooks"].get("UserPromptSubmit", []) for h in g["hooks"]]
 
 
-# --- install_hook: the installer (both hooks) -----------------------------------
+# --- install_hook: the installer (both hooks, py + wrapper) ----------------------
 
-def test_install_hook_copies_and_wires_both(tmp_path: Path) -> None:
+def test_install_hook_copies_scripts_and_wrappers_and_wires_both(tmp_path: Path) -> None:
     hd, sp = tmp_path / "hooks", tmp_path / "settings.json"
     r = hook_module.install_hook(hook_dir=hd, settings_path=sp)
-    assert (hd / "kb_capture_nudge.py").exists()
-    assert (hd / "kb_retrieve_nudge.py").exists()
+    for f in ("kb_capture_nudge.py", "kb-capture-nudge.sh", "kb_retrieve_nudge.py", "kb-retrieve-nudge.sh"):
+        assert (hd / f).exists(), f
     assert r["wired"] is True
     data = json.loads(sp.read_text(encoding="utf-8"))
-    assert any("kb_capture_nudge.py" in c for c in _stop_cmds(data))      # write side -> Stop
-    assert any("kb_retrieve_nudge.py" in c for c in _ups_cmds(data))      # read side -> UserPromptSubmit
+    assert any("kb-capture-nudge.sh" in c for c in _stop_cmds(data))     # write -> Stop, via wrapper
+    assert any("kb-retrieve-nudge.sh" in c for c in _ups_cmds(data))     # read -> UserPromptSubmit
+
+
+def test_command_is_machine_agnostic(tmp_path: Path) -> None:
+    # Default location -> ~-relative bash command (no abs path / interpreter / backslash),
+    # so the same settings.json works on every machine after a yadm sync.
+    cmd = hook_module._command_for("kb-capture-nudge.sh", hook_module.DEFAULT_HOOK_DIR)
+    assert cmd == "bash ~/.claude/hooks/kb-capture-nudge.sh"
+    assert "\\" not in cmd and "python" not in cmd.lower() and ":" not in cmd
+    # Custom dir -> POSIX (forward-slash) bash command, never Windows backslashes.
+    custom = hook_module._command_for("kb-capture-nudge.sh", tmp_path / "hooks")
+    assert custom.startswith('bash "') and custom.endswith('.sh"') and "\\" not in custom
 
 
 def test_install_hook_idempotent(tmp_path: Path) -> None:
@@ -49,8 +61,25 @@ def test_install_hook_idempotent(tmp_path: Path) -> None:
     hook_module.install_hook(hook_dir=hd, settings_path=sp)
     hook_module.install_hook(hook_dir=hd, settings_path=sp)
     data = json.loads(sp.read_text(encoding="utf-8"))
-    assert sum("kb_capture_nudge" in c for c in _stop_cmds(data)) == 1
-    assert sum("kb_retrieve_nudge" in c for c in _ups_cmds(data)) == 1
+    assert sum("kb-capture-nudge" in c for c in _stop_cmds(data)) == 1
+    assert sum("kb-retrieve-nudge" in c for c in _ups_cmds(data)) == 1
+
+
+def test_install_hook_supersedes_prior_absolute_path_entry(tmp_path: Path) -> None:
+    # The old (buggy) form baked an absolute Windows python path; re-running must
+    # replace it with the machine-agnostic wrapper command, exactly once.
+    sp = tmp_path / "settings.json"
+    sp.write_text(
+        json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": '"C:\\Python\\python.exe" "C:\\Users\\x\\.claude\\hooks\\kb_capture_nudge.py"'}]}
+        ]}}),
+        encoding="utf-8",
+    )
+    hook_module.install_hook(hook_dir=tmp_path / "hooks", settings_path=sp)
+    data = json.loads(sp.read_text(encoding="utf-8"))
+    stop = _stop_cmds(data)
+    assert not any("python.exe" in c for c in stop)            # absolute-path form gone
+    assert sum("kb-capture-nudge" in c for c in stop) == 1     # exactly one, the wrapper
 
 
 def test_install_hook_preserves_other_hooks_and_keys(tmp_path: Path) -> None:
@@ -69,30 +98,15 @@ def test_install_hook_preserves_other_hooks_and_keys(tmp_path: Path) -> None:
     data = json.loads(sp.read_text(encoding="utf-8"))
     assert data["theme"] == "dark"
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "bash guard.sh"
-    assert "bash other-stop.sh" in _stop_cmds(data)                # unrelated Stop hook kept
-    assert any("kb_capture_nudge" in c for c in _stop_cmds(data))  # ours added
-    assert any("kb_retrieve_nudge" in c for c in _ups_cmds(data))
-
-
-def test_install_hook_supersedes_old_wrapper(tmp_path: Path) -> None:
-    sp = tmp_path / "settings.json"
-    sp.write_text(
-        json.dumps({"hooks": {"Stop": [
-            {"hooks": [{"type": "command", "command": "bash ~/.claude/hooks/kb-capture-nudge.sh"}]}
-        ]}}),
-        encoding="utf-8",
-    )
-    hook_module.install_hook(hook_dir=tmp_path / "hooks", settings_path=sp)
-    data = json.loads(sp.read_text(encoding="utf-8"))
-    assert not any("kb-capture-nudge.sh" in c for c in _stop_cmds(data))   # old wrapper superseded
-    assert sum("kb_capture_nudge" in c for c in _stop_cmds(data)) == 1
+    assert "bash other-stop.sh" in _stop_cmds(data)                 # unrelated Stop hook kept
+    assert any("kb-capture-nudge" in c for c in _stop_cmds(data))   # ours added
+    assert any("kb-retrieve-nudge" in c for c in _ups_cmds(data))
 
 
 def test_install_hook_print_only_leaves_settings(tmp_path: Path) -> None:
     hd, sp = tmp_path / "hooks", tmp_path / "settings.json"
     r = hook_module.install_hook(hook_dir=hd, settings_path=sp, wire=False)
-    assert (hd / "kb_capture_nudge.py").exists()
-    assert (hd / "kb_retrieve_nudge.py").exists()
+    assert (hd / "kb_capture_nudge.py").exists() and (hd / "kb-capture-nudge.sh").exists()
     assert r["wired"] is False
     assert not sp.exists()
     snip = hook_module.snippet(r["installed"])
@@ -104,8 +118,7 @@ def test_install_hook_via_cli(tmp_path: Path) -> None:
 
     hd, sp = tmp_path / "hooks", tmp_path / "settings.json"
     assert main(["install-hook", "--hook-dir", str(hd), "--settings", str(sp)]) == 0
-    assert (hd / "kb_capture_nudge.py").exists()
-    assert (hd / "kb_retrieve_nudge.py").exists()
+    assert (hd / "kb_capture_nudge.py").exists() and (hd / "kb-retrieve-nudge.sh").exists()
     data = json.loads(sp.read_text(encoding="utf-8"))
     assert data["hooks"]["Stop"] and data["hooks"]["UserPromptSubmit"]
 
@@ -147,7 +160,7 @@ def test_capture_fires_on_substantial_turn(tmp_path: Path) -> None:
 
 def test_capture_fires_language_agnostic_japanese(tmp_path: Path) -> None:
     home = tmp_path / "home"; home.mkdir()
-    jp = "これは重要な結論です。" * 40  # ~400 chars, zero English keywords
+    jp = "これは重要な結論です。" * 40
     t = _transcript(tmp_path, "質問", jp)
     r = _run(CAPTURE_SCRIPT, {"transcript_path": str(t), "session_id": "jp"}, home)
     assert '"decision": "block"' in r.stdout
@@ -195,7 +208,7 @@ def test_retrieve_fires_on_substantial_prompt(tmp_path: Path) -> None:
 
 def test_retrieve_fires_language_agnostic_japanese(tmp_path: Path) -> None:
     home = tmp_path / "home"; home.mkdir()
-    jp = "去年このプロジェクトについて何を結論づけましたか？詳しく教えてください。"  # >20 chars, no English
+    jp = "去年このプロジェクトについて何を結論づけましたか？詳しく教えてください。"
     r = _run(RETRIEVE_SCRIPT, {"prompt": jp, "session_id": "rjp"}, home)
     assert "additionalContext" in r.stdout
 

@@ -1,44 +1,52 @@
 """install-hook: wire the KB capture + retrieval hooks into Claude Code.
 
-Ships two bundled hooks and registers them in `~/.claude/settings.json`, so a
-friend gets the full reliable KB loop with one command:
+Ships two bundled hooks (each a Python script + a bash wrapper) and registers them
+in `~/.claude/settings.json`, so a friend gets the full reliable KB loop with one
+command:
 
-- `_hooks/kb_capture_nudge.py`  → a `Stop` hook (WRITE side): captures durable
-  conclusions at stepping-stones instead of waiting to be told.
-- `_hooks/kb_retrieve_nudge.py` → a `UserPromptSubmit` hook (READ side): reminds
-  Claude to consult the KB before answering, so it functions as the source of
-  truth.
+- `_hooks/kb_capture_nudge.py`  (via `kb-capture-nudge.sh`)  → a `Stop` hook (WRITE):
+  captures durable conclusions at stepping-stones instead of waiting to be told.
+- `_hooks/kb_retrieve_nudge.py` (via `kb-retrieve-nudge.sh`) → a `UserPromptSubmit`
+  hook (READ): reminds Claude to consult the KB before answering.
 
-Both are language-agnostic (structural gate + cooldown, no English keywords). By
-default this copies the scripts AND merges settings.json. `wire=False`
-(`--print-only`) copies the scripts and returns the snippet to paste instead.
+The registered command is **machine-agnostic** — `bash ~/.claude/hooks/<name>.sh`,
+matching the convention of other hooks — so the same `~/.claude` works across
+machines (Windows Git Bash, WSL, Linux, macOS) and survives yadm/dotfile sync. The
+wrapper resolves python per machine; an absolute interpreter path would break the
+moment `~/.claude` is shared between a Windows box and WSL.
+
+Both gates are language-agnostic (structural + cooldown, no English keywords). By
+default this copies the scripts AND merges settings.json; `wire=False`
+(`--print-only`) copies them and returns the snippet to paste instead.
 """
 
 from __future__ import annotations
 
 import json
 import shutil
-import sys
 from pathlib import Path
 
 _HOOK_DIR_SRC = Path(__file__).parent / "_hooks"
-# (script filename, Claude Code event) — the hooks this installs.
+# (python script, bash wrapper, Claude Code event) — the hooks this installs.
 _HOOK_SPECS = (
-    ("kb_capture_nudge.py", "Stop"),
-    ("kb_retrieve_nudge.py", "UserPromptSubmit"),
+    ("kb_capture_nudge.py", "kb-capture-nudge.sh", "Stop"),
+    ("kb_retrieve_nudge.py", "kb-retrieve-nudge.sh", "UserPromptSubmit"),
 )
 DEFAULT_HOOK_DIR = Path.home() / ".claude" / "hooks"
 DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 
 # Substrings identifying a previously-installed kb nudge entry, so re-running is
-# idempotent and supersedes older hand-wired wrappers.
+# idempotent and supersedes older entries (incl. the absolute-python-path form).
 _MARKERS = ("kb_capture_nudge", "kb_retrieve_nudge", "kb-capture-nudge", "kb-retrieve-nudge")
 
 
-def _command_for(script: Path) -> str:
-    """Invoke via the interpreter that ran install-hook (absolute path), so the
-    hook doesn't depend on `python` being on PATH later. Quoted for spaces."""
-    return f'"{sys.executable}" "{script}"'
+def _command_for(wrapper: str, hook_dir: Path) -> str:
+    """Machine-agnostic `bash` invocation of the wrapper. For the default location
+    use the `~`-relative form so the SAME settings.json works on every machine
+    (yadm-synced); for a custom dir (tests) use a POSIX absolute path."""
+    if hook_dir == DEFAULT_HOOK_DIR:
+        return f"bash ~/.claude/hooks/{wrapper}"
+    return f'bash "{(hook_dir / wrapper).as_posix()}"'
 
 
 def snippet(installed: list[dict], timeout: int = 10) -> str:
@@ -59,24 +67,30 @@ def install_hook(
     timeout: int = 10,
     specs: tuple = _HOOK_SPECS,
 ) -> dict:
-    """Install the bundled hook scripts and (optionally) wire settings.json.
+    """Install the bundled hook scripts + wrappers and (optionally) wire settings.json.
 
-    Returns {"installed": [{event, script, command}], "wired", "settings"}.
-    Raises FileNotFoundError if a bundled hook is missing.
+    Returns {"installed": [{event, script, wrapper, command}], "wired", "settings"}.
+    Raises FileNotFoundError if a bundled hook file is missing.
     """
-    for name, _event in specs:
-        if not (_HOOK_DIR_SRC / name).exists():
-            raise FileNotFoundError(
-                f"bundled hook missing at {_HOOK_DIR_SRC / name} — is the kb-mcp install intact?"
-            )
+    for py_name, sh_name, _event in specs:
+        for name in (py_name, sh_name):
+            if not (_HOOK_DIR_SRC / name).exists():
+                raise FileNotFoundError(
+                    f"bundled hook file missing at {_HOOK_DIR_SRC / name} — is the kb-mcp install intact?"
+                )
     hook_dir = (Path(hook_dir).expanduser() if hook_dir else DEFAULT_HOOK_DIR)
     hook_dir.mkdir(parents=True, exist_ok=True)
 
     installed: list[dict] = []
-    for name, event in specs:
-        dest = hook_dir / name
-        shutil.copy2(_HOOK_DIR_SRC / name, dest)
-        installed.append({"event": event, "script": str(dest), "command": _command_for(dest)})
+    for py_name, sh_name, event in specs:
+        shutil.copy2(_HOOK_DIR_SRC / py_name, hook_dir / py_name)
+        shutil.copy2(_HOOK_DIR_SRC / sh_name, hook_dir / sh_name)
+        installed.append({
+            "event": event,
+            "script": str(hook_dir / py_name),
+            "wrapper": str(hook_dir / sh_name),
+            "command": _command_for(sh_name, hook_dir),
+        })
 
     result = {"installed": installed, "wired": False, "settings": None}
     if wire:
@@ -88,10 +102,9 @@ def install_hook(
 
 
 def _merge_hooks(path: Path, installed: list[dict], timeout: int) -> None:
-    """Add each hook to its event in settings.json, preserving every other key
-    and hook. Idempotent: strips any prior kb nudge entry from the target event
-    first (so re-running, or superseding an older hand-wired wrapper, never
-    duplicates)."""
+    """Add each hook to its event in settings.json, preserving every other key and
+    hook. Idempotent: strips any prior kb nudge entry from the target event first
+    (so re-running, or superseding the old absolute-path command, never duplicates)."""
     data: dict = {}
     if path.exists():
         try:
