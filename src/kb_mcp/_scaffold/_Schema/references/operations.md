@@ -297,3 +297,31 @@ See `supersession.md`. Summary:
 - One updated old file (frontmatter + banner)
 - Updated subfolder and top-level `index.md`
 - Updated `ingested_into` fields on cited sources for the new page
+
+## query_data
+
+Structured query over a CSV/JSON **data file** under the vault — the retrieval half of the data-search pattern. `find` surfaces a dataset's markdown card; `query_data` reads the raw file the card's `dataset_files:` points at and returns exact rows or an aggregate. Read-only; no writes, no index (reads on demand — KB datasets are small). Raw CSV/JSON are not `find`-searchable; this is how you query their values.
+
+### Triggers
+- "what was my X over time," "filter the CSV," "rows where Y > Z," "sum/avg/latest/distinct of a column," "how many entries in <dataset>."
+- A value the dataset card's summary tables don't pre-answer, or a whole-dataset / ad-hoc query.
+
+### Inputs to gather
+- `path` — vault-relative `.csv`/`.tsv`/`.json` (usually a card's `dataset_files:` entry).
+- For nested JSON: `record_path` (dotted, e.g. `sections.work_incapacity`) — omit for a top-level array or the common keys result/results/data/rows/items/entries.
+- The query: `filters` (`[{column, op, value}]`; op ∈ eq/ne/gt/gte/lt/lte/contains/icontains/startswith/in/nin/exists/missing), `columns` (projection; dotted ok), `sort_by`+`descending`, `limit`/`offset`, OR `aggregate` (`count` | `min|max|sum|avg|latest|distinct:column`), OR `date_from`/`date_to`(/`date_column`).
+
+### Procedure
+1. Resolve + read the file (path-escape-guarded; 25 MB cap; CSV/TSV by header, JSON array or via `record_path`).
+2. Apply filters (+ any date range). Numeric compares coerce tolerantly (comma decimals; lab `<`/`>` operators stripped for the comparison).
+3. If `aggregate`: compute over matched rows and return it. Else: sort → paginate → project columns.
+
+### Output format
+`{path, format, total_rows, total_matched, returned, columns, rows, aggregate, truncated, warnings}`.
+
+### Edge cases
+- Dotted columns reach nested JSON fields (`performer.name`, `id.extension`) in filters/columns/sort/aggregate. Deeply irregular JSON may need a one-time flatten-to-CSV first; flat tables are the sweet spot.
+- `limit` hard-capped at 1000 (default 100); `truncated: true` signals more rows matched than returned.
+
+### Writes performed
+- None (read-only).
