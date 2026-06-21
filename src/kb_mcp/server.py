@@ -38,6 +38,7 @@ from . import add as add_module
 from . import append_to_file as append_to_file_module
 from . import audit as audit_module
 from . import audit_fix as audit_fix_module
+from . import cf_access
 from . import compile_proposal as compile_proposal_module
 from . import corpus_aware as corpus_aware_module
 from . import create_directory as create_directory_module
@@ -376,37 +377,50 @@ def build_server(*, require_auth: bool) -> FastMCP:
     #
     # Reachability: this route is NOT behind the MCP GitHub OAuth (that guards
     # /mcp). It is publicly reachable via cloudflared, so it carries its OWN auth:
-    # a dedicated bearer token (KB_MCP_UPLOAD_TOKEN). Unset → the route refuses
-    # every request (never an open write hole). NOTE: the claude.ai web code
-    # sandbox is network-locked and CANNOT reach this route; it's for Hugo's
-    # browser / phone / CLI.
+    # a bearer token (KB_MCP_UPLOAD_TOKEN) and/or a *signature-verified* Cloudflare
+    # Access JWT (KB_MCP_CF_ACCESS_TEAM_DOMAIN + KB_MCP_CF_ACCESS_AUD). With neither
+    # configured the route refuses every request (never an open write hole). NOTE:
+    # the claude.ai web code sandbox is network-locked and CANNOT reach this route;
+    # it's for Hugo's browser / phone / CLI.
     upload_token = os.environ.get("KB_MCP_UPLOAD_TOKEN", "").strip() or None
     upload_max_bytes = int(
         os.environ.get("KB_MCP_UPLOAD_MAX_BYTES", str(preserve_module.MAX_UPLOAD_BYTES))
     )
+    cf_team = os.environ.get("KB_MCP_CF_ACCESS_TEAM_DOMAIN", "").strip() or None
+    cf_aud = os.environ.get("KB_MCP_CF_ACCESS_AUD", "").strip() or None
+    cf_jwks = cf_access.make_jwks_client(cf_team) if (cf_team and cf_aud) else None
+    upload_enabled = upload_token is not None or cf_jwks is not None
 
     def _upload_authorized(request: Request) -> bool:
-        # A bearer-token match is the ONLY thing that authorizes. We deliberately
-        # do NOT trust any `Cf-Access-*` request header: those are client-spoofable
-        # by anything that reaches the origin directly (a localhost process, the
-        # Tailscale fallback, a misrouted tunnel). Cloudflare Access, if used, sits
-        # in FRONT as a network gate; trusting its assertion *in-app* would require
-        # verifying the signed Cf-Access-Jwt-Assertion against the team JWKS
-        # (issuer / aud / exp) — a documented fast-follow, never a bare header check.
-        if upload_token is None:
-            return False
-        header = request.headers.get("authorization", "")
-        if header.startswith("Bearer "):
-            presented = header[len("Bearer ") :].strip()
-            if secrets.compare_digest(presented, upload_token):
+        # Two independent, non-spoofable credentials. (1) the bearer token,
+        # constant-time compared. (2) a Cloudflare Access JWT whose SIGNATURE is
+        # verified against the team JWKS (aud / iss / exp) — never the plaintext
+        # cf-access-authenticated-user-email header, which is client-spoofable.
+        if upload_token is not None:
+            header = request.headers.get("authorization", "")
+            if header.startswith("Bearer "):
+                presented = header[len("Bearer ") :].strip()
+                if secrets.compare_digest(presented, upload_token):
+                    return True
+        if cf_jwks is not None:
+            if cf_access.verify(
+                request.headers.get("cf-access-jwt-assertion"),
+                jwks_client=cf_jwks,
+                team_domain=cf_team,
+                audience=cf_aud,
+            ):
                 return True
         return False
 
     @mcp.custom_route("/upload", methods=["POST"])
     async def _upload(request: Request) -> JSONResponse:
-        if upload_token is None:
+        if not upload_enabled:
             return JSONResponse(
-                {"code": "UPLOAD_DISABLED", "reason": "uploads are off: set KB_MCP_UPLOAD_TOKEN"},
+                {
+                    "code": "UPLOAD_DISABLED",
+                    "reason": "uploads are off: set KB_MCP_UPLOAD_TOKEN (or configure "
+                    "Cloudflare Access via KB_MCP_CF_ACCESS_TEAM_DOMAIN + KB_MCP_CF_ACCESS_AUD)",
+                },
                 status_code=503,
             )
         if not _upload_authorized(request):
@@ -492,7 +506,7 @@ button{{margin-top:1rem;padding:.6rem 1rem;font:inherit}}#out{{margin-top:1rem;w
 <label>Category</label><input name=category value="{_attr('category')}" placeholder="e.g. 01 - Check-in" required>
 <label>Filename (optional)</label><input name=filename value="{_attr('filename')}">
 <label>Description (optional)</label><input name=description value="{_attr('description')}">
-<label>Upload token (required)</label><input name=token type=password required>
+<label>Upload token (blank if behind Cloudflare Access)</label><input name=token type=password>
 <button type=submit>Upload</button></form>
 <div id=out></div>
 <script>

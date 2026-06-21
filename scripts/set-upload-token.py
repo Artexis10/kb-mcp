@@ -48,6 +48,13 @@ def main() -> None:
                 fh.write("\n")
             fh.write(f"{KEY}={token}\n")
 
+    # .env holds credentials — keep it owner-only. Real protection on POSIX
+    # (friend/Linux deploys); a harmless near-no-op on single-user Windows.
+    try:
+        ENV.chmod(0o600)
+    except OSError:
+        pass
+
     print(f"set {KEY}={token[:6]}...{token[-4:]}  (restart the service to load it)")
 
 

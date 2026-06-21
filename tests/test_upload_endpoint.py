@@ -103,6 +103,41 @@ def test_upload_duplicate_is_conflict(vault, monkeypatch: pytest.MonkeyPatch) ->
     assert second.status_code == 409, second.text
 
 
+def test_cf_access_valid_jwt_authorizes(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    # No bearer token configured; a *verified* CF Access JWT is the credential.
+    monkeypatch.setattr("kb_mcp.cf_access.verify", lambda *a, **k: True)
+    client = _client(
+        vault,
+        monkeypatch,
+        KB_MCP_CF_ACCESS_TEAM_DOMAIN="t.cloudflareaccess.com",
+        KB_MCP_CF_ACCESS_AUD="aud123",
+    )
+    r = client.post(
+        "/upload",
+        files={"file": ("a.bin", b"viacfaccess", "application/octet-stream")},
+        data={"scope": "S", "category": "C"},
+        headers={"cf-access-jwt-assertion": "fake.jwt.token"},
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_cf_access_invalid_jwt_rejected(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kb_mcp.cf_access.verify", lambda *a, **k: False)
+    client = _client(
+        vault,
+        monkeypatch,
+        KB_MCP_CF_ACCESS_TEAM_DOMAIN="t.cloudflareaccess.com",
+        KB_MCP_CF_ACCESS_AUD="aud123",
+    )
+    r = client.post(
+        "/upload",
+        files={"file": ("a.bin", b"x", "application/octet-stream")},
+        data={"scope": "S", "category": "C"},
+        headers={"cf-access-jwt-assertion": "bad"},
+    )
+    assert r.status_code == 401, r.text
+
+
 def test_upload_get_serves_prefilled_form(vault, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(vault, monkeypatch, KB_MCP_UPLOAD_TOKEN="sekret")
     r = client.get("/upload?scope=Yolo&category=01%20-%20Check-in")
