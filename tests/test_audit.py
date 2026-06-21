@@ -170,3 +170,43 @@ def test_broken_link_in_editable_file_stays_warn(vault: Path) -> None:
     assert hits, "expected the broken link to be flagged"
     assert hits[0].severity == "warn", hits[0].as_dict()
     assert not (hits[0].meta or {}).get("immutable"), hits[0].as_dict()
+
+
+def test_embedding_drift_flags_never_embedded_file(vault: Path) -> None:
+    """A file with NO sidecar row (out-of-band create) is flagged as drift —
+    not just files whose existing row is mtime-stale. Regression for reconcile
+    silently skipping never-embedded files."""
+    import sqlite3
+
+    kb = vault / "Knowledge Base"
+    sidecar = kb / ".embeddings.sqlite"
+    embedded = kb / "Notes" / "Insights" / "progressive-disclosure-without-mode-fragmentation.md"
+    embedded_rel = "Knowledge Base/Notes/Insights/progressive-disclosure-without-mode-fragmentation.md"
+
+    # Seed a sidecar with one already-embedded note; row mtime ahead of disk so
+    # it is NOT mtime-stale.
+    conn = sqlite3.connect(sidecar)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chunks (file_path TEXT NOT NULL, "
+        "chunk_idx INTEGER NOT NULL, chunk_text TEXT NOT NULL, vector BLOB NOT NULL, "
+        "file_mtime REAL NOT NULL, PRIMARY KEY (file_path, chunk_idx))"
+    )
+    conn.execute(
+        "INSERT INTO chunks VALUES (?,?,?,?,?)",
+        (embedded_rel, 0, "x", b"\x00", embedded.stat().st_mtime + 60),
+    )
+    conn.commit()
+    conn.close()
+
+    # A brand-new note written out-of-band — no sidecar row at all.
+    new = kb / "Notes" / "Insights" / "brand-new-out-of-band.md"
+    new.write_text(
+        "---\ntype: insight\nstatus: active\n---\n\n# Brand new\n\nSome body to chunk.\n",
+        encoding="utf-8",
+    )
+
+    findings = audit_module._check_embedding_drift(vault)
+    flagged = {f.path for f in findings}
+    assert "Knowledge Base/Notes/Insights/brand-new-out-of-band.md" in flagged, flagged
+    assert embedded_rel not in flagged  # already embedded + fresh → not flagged
+    assert all(f.category == "embedding_drift" for f in findings)
