@@ -56,6 +56,7 @@ from . import note as note_module
 from . import preserve as preserve_module
 from . import project_keys as project_keys_module
 from . import provenance as provenance_module
+from . import query_data as query_data_module
 from . import query_log
 from . import reconcile as reconcile_module
 from . import recover_from_trash as recover_from_trash_module
@@ -1383,7 +1384,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
     #   are write-protected by default; pass `allow_curated=true` to override.
     # - Every write logs to Knowledge Base/log.md.
     #
-    # Tier 2 is opt-out: setting KB_MCP_DISABLE_TIER2 drops these 12 escape-hatch
+    # Tier 2 is opt-out: setting KB_MCP_DISABLE_TIER2 drops these 13 escape-hatch
     # tools from the registered surface, shrinking the deferred-tool list a client
     # must keyword-search to reach the Tier 1 read/write ops. The functions are
     # still defined either way; `tier2_tool` only decides whether to register.
@@ -1391,6 +1392,78 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
     def tier2_tool(fn):
         return mcp.tool(fn) if _expose_tier2 else fn
+
+    @tier2_tool
+    def query_data(
+        path: str,
+        record_path: str | None = None,
+        filters: list[dict] | None = None,
+        columns: list[str] | None = None,
+        sort_by: str | None = None,
+        descending: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+        aggregate: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        date_column: str | None = None,
+    ) -> dict:
+        """Tier 2: structured query over a CSV/JSON data file under the vault.
+
+        The retrieval half of the data-search pattern — `find` surfaces a
+        dataset's markdown "card"; this reads the raw file the card points at
+        and returns exact rows / aggregates (no whole-file dump). KB datasets
+        are small, so it reads on demand — no index, no new infra.
+
+        Formats: CSV / TSV, and JSON (a top-level array, or a nested array via
+        `record_path` / common-key auto-detect). Column names may be dotted to
+        reach nested JSON fields (e.g. "performer.name", "id.extension")
+        anywhere a column is named (filters / columns / sort / aggregate).
+
+        Args:
+            path: vault-relative path to the `.csv` / `.tsv` / `.json` file.
+            record_path: (JSON) dotted path to the array inside a nested
+                object, e.g. "sections.work_incapacity". Omit for a top-level
+                array or the common keys result/results/data/rows/items/entries.
+            filters: list of `{column, op, value}`. `op` ∈ eq, ne, gt, gte, lt,
+                lte, contains, icontains, startswith, in, nin, exists, missing.
+                Numeric compares coerce tolerantly (comma decimals; lab
+                operators like "<0.4"/">75" are stripped for the comparison).
+            columns: project to these columns (dotted ok). Omit for all.
+            sort_by / descending: sort by a column (numeric-aware).
+            limit / offset: pagination (limit default 100, hard cap 1000).
+            aggregate: instead of rows — "count", or "func:column" where func ∈
+                min, max, sum, avg, latest, distinct.
+            date_from / date_to / date_column: convenience date-range filter on
+                `date_column` (defaults to a "date" column if present); ISO
+                date strings, compared lexicographically.
+
+        Returns:
+            {path, format, total_rows, total_matched, returned, columns, rows,
+             aggregate, truncated, warnings}.
+
+        Errors: INVALID_PATH / NOT_FOUND (path); UNSUPPORTED_FORMAT; TOO_LARGE;
+            BAD_JSON; BAD_RECORD_PATH; BAD_FILTER; BAD_OP; BAD_AGGREGATE.
+        """
+        try:
+            result = query_data_module.query_data(
+                vault_root,
+                path=path,
+                record_path=record_path,
+                filters=filters,
+                columns=columns,
+                sort_by=sort_by,
+                descending=descending,
+                limit=limit,
+                offset=offset,
+                aggregate=aggregate,
+                date_from=date_from,
+                date_to=date_to,
+                date_column=date_column,
+            )
+        except query_data_module.QueryDataError as e:
+            raise ValueError(f"{e.code}: {e.reason}") from e
+        return result.as_dict()
 
     @tier2_tool
     def create_file(

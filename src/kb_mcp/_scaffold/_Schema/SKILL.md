@@ -1,7 +1,7 @@
 ---
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their KB, vault, Obsidian, or notes — including oblique phrasings ("interesting, save it," "I want to remember this"). Also engages proactively, without being told — it consults the KB for prior conclusions when a turn touches a project, domain, decision, or topic it likely covers, and captures durable conclusions when the conversation reaches a stepping-stone (agreement, decision, solved problem, diagnosed failure, or recognized pattern). Do NOT trigger for writes outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs.
-version: 0.16.0
+version: 0.17.0
 ---
 
 # Knowledge Base
@@ -152,6 +152,7 @@ Do NOT use Tier 2 when Tier 1 fits. If it's a research-note → `note`. If it's 
 | **recover_from_trash** | Undo a delete: move from `_trash/` back to original (or custom) location, clean sidecar | `_trash/` → restored path |
 | **append_to_file** | Append text to an existing file | the file |
 | **list_inbound_links** | Find all files whose wikilinks resolve to a target. Read-only | — |
+| **query_data** | Structured query over a CSV/JSON **data file** under the vault — filter/sort/paginate, project columns, or aggregate (count/min/max/sum/avg/latest/distinct). Dotted columns reach nested JSON; `record_path` locates a nested array. The retrieval half of the data-search pattern (`find` → dataset card → `query_data`); raw data files aren't `find`-searchable, this queries them by path. Read-only | — |
 
 ### Discipline preserved across BOTH tiers
 
@@ -186,6 +187,7 @@ These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch aro
 - "create a file at X with this content," "write an Identity/ page" (path doesn't fit a typed-note route) → **create_file** (Tier 2)
 - "rename this page to X," "move this note to Patterns/" → **move_file** (Tier 2; defaults to updating inbound wikilinks)
 - "what's in folder X," "list the files under Y" → **list_directory** (Tier 2)
+- "query my data," "filter the CSV," "what was my X over time," "rows where Y > Z," "sum/avg/latest of a column," "how many entries in <dataset>" → **query_data** (Tier 2)
 - "what links to X" → **list_inbound_links** (Tier 2)
 - "flip the status to archived," "set tenant: tu on this page" (single-field tweak) → **edit** (`field`+`value`)
 - "tack this onto the end of X" → **append_to_file** (Tier 2)
