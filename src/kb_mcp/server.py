@@ -90,6 +90,7 @@ _GUARDED_WRITE_FIELDS = {
     "replace": ("content",),
     "create_file": ("content",),
     "append_to_file": ("content",),
+    "preserve": ("content",),
 }
 
 
@@ -1503,25 +1504,22 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
         scope: str,
         category: str,
         filename: str,
-        content_base64: str | None = None,
-        content: str | None = None,
+        content: str,
         description: str | None = None,
     ) -> dict:
-        """Capture a binary or text artifact to Evidence/<scope>/<category>/.
+        """Capture a TEXT artifact to Evidence/<scope>/<category>/.
 
-        For raw factual artifacts — PDFs, screenshots, letters, medical
-        records, legal documents — that need to be preserved as-received
-        with no analytical processing. Per SKILL.md rule 2, Evidence is
-        append-only. Analytical takes go in compiled notes that link to
-        the evidence file.
+        For raw factual artifacts that are text — transcripts, pasted letters,
+        email bodies — preserved as-received with no analytical processing. Per
+        SKILL.md rule 2, Evidence is append-only; analytical takes go in compiled
+        notes that link to the evidence file.
 
-        Exactly one of `content_base64` or `content` must be supplied:
-        - `content_base64`: file bytes (binaries — PDF, images, .docx).
-          5MB decoded size limit. PREFER the out-of-band POST /upload endpoint
-          for anything but tiny files — base64 here is billed as output tokens,
-          so a multi-MB file is very expensive. /upload carries the bytes with
-          zero token cost.
-        - `content`: UTF-8 text (markdown, plain text, transcripts).
+        BINARY artifacts (PDFs, images, .docx — any non-text file) do NOT go
+        through this tool. There is no base64 path through the model: encoding a
+        binary is billed as output tokens and is needlessly expensive now that
+        the out-of-band upload exists. For binaries, call `mint_upload_token` and
+        POST the bytes to `/upload` (zero token cost), or drop the file into
+        Evidence/ desk-side via Obsidian Sync.
 
         Args:
             scope: Incident or domain key (e.g. "Yolo", "Mother Cancer").
@@ -1529,11 +1527,8 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             category: Sub-category within scope (e.g. "letters", "labs",
                 "court-docs"). Creates the subfolder if it doesn't exist.
             filename: The artifact's filename including extension
-                (e.g. `2026-04-15-pathology-report.pdf`). Date-prefixing
-                where temporal anchoring matters is the convention.
-            content_base64: Base64-encoded file bytes. Use for binary
-                artifacts.
-            content: UTF-8 text. Use for text-based artifacts.
+                (e.g. `2026-04-15-statement.txt`).
+            content: UTF-8 text to preserve as-received.
             description: Optional. If supplied, a sidecar `<filename>.md`
                 is written alongside the artifact with frontmatter and the
                 description under `## Description`.
@@ -1542,9 +1537,8 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             {path, sidecar_path, warnings}.
 
         Errors:
-            INVALID_PRESERVE (missing required, both content modes set, etc.);
-            ARTIFACT_EXISTS (file already exists — Evidence is append-only,
-            pick a new filename); TOO_LARGE (>5MB decoded).
+            INVALID_PRESERVE (missing required); ARTIFACT_EXISTS (file already
+            exists — Evidence is append-only, pick a new filename).
         """
         try:
             result = preserve_module.preserve(
@@ -1552,7 +1546,6 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
                 scope=scope,
                 category=category,
                 filename=filename,
-                content_base64=content_base64,
                 content=content,
                 description=description,
             )

@@ -165,8 +165,8 @@ These two updates are non-negotiable for every operation below. The per-operatio
 
 ### Delivering the bytes — never base64 through the model
 
-The expensive trap: encoding the file into a `preserve(content_base64=…)` or
-text-tool argument. Those characters are **model output tokens** — a multi-MB
+The expensive trap: encoding the file into a text-tool argument (the `preserve`
+tool no longer accepts binary content at all). Those characters are **model output tokens** — a multi-MB
 file is millions of them, billed to Hugo, and a chat-uploaded image can't even be
 reproduced faithfully. Pick the channel by where the file actually is:
 
@@ -191,8 +191,8 @@ reproduced faithfully. Pick the channel by where the file actually is:
   token cost, ≤25 MB.
 - **Claude Code / desk-side:** the file is already on local disk — write it straight
   into `Evidence/<scope>/<category>/`, or drop it via Obsidian Sync; the note links it.
-- **`preserve(content_base64=…)`** stays valid only for *genuinely small* artifacts
-  the model truly holds (≤5 MB hard cap). The text-write tools reject base64 blobs
+- **`preserve`** is text-only — there is no base64 path through the model anymore;
+  binaries always go via the channels above. Every write tool rejects base64 blobs
   outright (`BINARY_BLOB_REJECTED`).
 
 ### Procedure
