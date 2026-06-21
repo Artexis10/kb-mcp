@@ -68,6 +68,7 @@ from . import replace as replace_module
 from . import schema
 from . import set_frontmatter_field as set_frontmatter_field_module
 from . import set_take as set_take_module
+from . import upload_tokens
 from .vault import (
     VaultPathError,
     find_body_wikilinks,
@@ -400,7 +401,10 @@ def build_server(*, require_auth: bool) -> FastMCP:
             header = request.headers.get("authorization", "")
             if header.startswith("Bearer "):
                 presented = header[len("Bearer ") :].strip()
+                # long-lived secret, or a short-lived token minted from it
                 if secrets.compare_digest(presented, upload_token):
+                    return True
+                if upload_tokens.verify(presented, upload_token):
                     return True
         if cf_jwks is not None:
             if cf_access.verify(

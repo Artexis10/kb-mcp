@@ -103,6 +103,34 @@ def test_upload_duplicate_is_conflict(vault, monkeypatch: pytest.MonkeyPatch) ->
     assert second.status_code == 409, second.text
 
 
+def test_minted_short_lived_token_authorizes(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kb_mcp import upload_tokens
+
+    client = _client(vault, monkeypatch, KB_MCP_UPLOAD_TOKEN="sekret")
+    minted = upload_tokens.mint("sekret")  # valid ~15 min
+    r = client.post(
+        "/upload",
+        files={"file": ("a.bin", b"viaminted", "application/octet-stream")},
+        data={"scope": "S", "category": "C"},
+        headers={"Authorization": f"Bearer {minted}"},
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_expired_minted_token_rejected(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kb_mcp import upload_tokens
+
+    client = _client(vault, monkeypatch, KB_MCP_UPLOAD_TOKEN="sekret")
+    expired = upload_tokens.mint("sekret", ttl=-10)  # already past exp
+    r = client.post(
+        "/upload",
+        files={"file": ("a.bin", b"x", "application/octet-stream")},
+        data={"scope": "S", "category": "C"},
+        headers={"Authorization": f"Bearer {expired}"},
+    )
+    assert r.status_code == 401, r.text
+
+
 def test_cf_access_valid_jwt_authorizes(vault, monkeypatch: pytest.MonkeyPatch) -> None:
     # No bearer token configured; a *verified* CF Access JWT is the credential.
     monkeypatch.setattr("kb_mcp.cf_access.verify", lambda *a, **k: True)
