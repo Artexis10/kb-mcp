@@ -12,10 +12,12 @@ counts drift silently (surfaced by audit's `embedding_drift` / `index_drift`).
    on-disk reality (reusing `indexes.compute_subindex_writes`) and rewrite any
    that drifted. Hand-curated descriptions and Recent-activity are preserved —
    only count tokens move.
-2. **Embeddings (incremental)** — re-embed only the *stale* files (the ones
-   `embedding_drift` flags: on-disk mtime newer than the sidecar row), via the
-   same `upsert_after_write` path the writers use. Cheaper than a full
-   `audit_fix(rebuild_embeddings=True)` wipe-and-rebuild.
+2. **Embeddings (incremental)** — re-embed the files `embedding_drift` flags:
+   *stale* rows (on-disk mtime newer than the sidecar row) AND files with no
+   sidecar row at all (never embedded — out-of-band creates in Obsidian /
+   mobile / a filesystem write), via the same `upsert_after_write` path the
+   writers use. Cheaper than a full `audit_fix(rebuild_embeddings=True)`
+   wipe-and-rebuild.
 3. **Drift report** — re-run `index_drift` + `embedding_drift` and return what
    remains.
 
@@ -100,7 +102,7 @@ def reconcile(vault_root: Path, *, dry_run: bool = False) -> ReconcileReport:
     if writes and not dry_run:
         batch_atomic_write(writes, vault_root=vault_root)
 
-    # ---- 2. Embeddings (incremental refresh of stale rows only) ----
+    # ---- 2. Embeddings (incremental refresh of stale + never-embedded files) ----
     if os.environ.get("KB_MCP_DISABLE_EMBEDDINGS"):
         report.embeddings_status = "disabled"
     else:

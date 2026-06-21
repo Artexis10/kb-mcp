@@ -746,11 +746,16 @@ def _check_unregistered_project_keys(
 
 
 def _check_embedding_drift(vault_root: Path) -> list[AuditFinding]:
-    """Flag sidecar rows whose on-disk file mtime is newer than the row's mtime.
+    """Flag embedding drift in three forms: (1) sidecar rows whose on-disk file
+    mtime is newer than the row (external edit), (2) rows whose file is gone from
+    disk, and (3) on-disk embeddable files with NO sidecar row at all — never
+    embedded, e.g. created out-of-band in Obsidian / mobile / a filesystem write,
+    which bypass the writer's embed hook.
 
-    External Obsidian edits don't trigger the writer hooks, so the vector
-    sidecar drifts silently. `audit_fix(rebuild_embeddings=True)` resolves
-    all of them in one rebuild — but you want to know it's needed.
+    External edits/creates don't trigger the writer hooks, so the vector sidecar
+    drifts silently. `reconcile` heals all three incrementally (it re-embeds
+    whatever this flags); `audit_fix(rebuild_embeddings=True)` resolves them in
+    one wipe-and-rebuild.
     """
     findings: list[AuditFinding] = []
     sidecar = vault_root / "Knowledge Base" / ".embeddings.sqlite"
@@ -800,8 +805,37 @@ def _check_embedding_drift(vault_root: Path) -> list[AuditFinding]:
                     f"({(row_mtime or 0):.0f}) — likely external edit."
                 ),
                 proposed_fix=(
-                    "Run `audit_fix(rebuild_embeddings=true)` to refresh."
+                    "Run `reconcile` (or `audit_fix(rebuild_embeddings=true)`) to refresh."
                 ),
+            ))
+
+    # Files on disk that were NEVER embedded — no sidecar row at all. The scan
+    # above only compares existing rows, so out-of-band *creates* (Obsidian /
+    # mobile / filesystem writes that bypass the writer's embed hook) stay
+    # vector-invisible until caught here. Mirror the embedder's selection
+    # (_walk_md + _is_embeddable_path + non-empty chunks) so we never flag a
+    # file the rebuild itself would skip — that would be perpetual drift.
+    from . import embeddings as embeddings_module
+    kb = vault_root / "Knowledge Base"
+    if kb.is_dir():
+        for md in find_module._walk_md(kb):
+            if not embeddings_module._is_embeddable_path(md):
+                continue
+            try:
+                rel = md.resolve().relative_to(vault_root.resolve()).as_posix()
+            except (ValueError, OSError):
+                continue
+            if rel in seen:
+                continue
+            page = find_module._CACHE.get(md, vault_root)
+            if page is None or not embeddings_module.chunk_text(page.title, page.body):
+                continue  # empty / no-chunk file — the embedder skips it too
+            findings.append(AuditFinding(
+                category="embedding_drift",
+                severity="info",
+                path=rel,
+                detail="file has no sidecar row — never embedded (out-of-band create).",
+                proposed_fix="Run `reconcile` to embed it incrementally.",
             ))
     return findings
 
