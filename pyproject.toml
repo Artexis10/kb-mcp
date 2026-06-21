@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-slugify>=8.0",
     "python-dotenv>=1.0",
+    "python-multipart>=0.0.9",  # Starlette multipart parsing for the /upload route
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
     "snowballstemmer>=2.2",

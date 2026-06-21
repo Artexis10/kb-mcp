@@ -163,6 +163,31 @@ These two updates are non-negotiable for every operation below. The per-operatio
 - Category — a numbered subfolder under the scope (e.g., `01 - Warning Letter 2026-05-15`, `02 - Promotion Track Evidence`). Use existing categories where they fit; create new ones only when none apply.
 - Optional: descriptive filename if the original is generic (e.g., rename `Screenshot 2026-05-15 at 23.14.png` to `2026-05-15-slack-jovany-king-of-ai-statement.png`)
 
+### Delivering the bytes — never base64 through the model
+
+The expensive trap: encoding the file into a `preserve(content_base64=…)` or
+text-tool argument. Those characters are **model output tokens** — a multi-MB
+file is millions of them, billed to Hugo, and a chat-uploaded image can't even be
+reproduced faithfully. Pick the channel by where the file actually is:
+
+- **On claude.ai web (the model only *sees* the image, has no bytes):** transcribe
+  the content into the evidence/note *text* (that's the queryable part), then hand
+  Hugo a ready link to the upload page —
+  `https://kb.substratesystems.io/upload?scope=<scope>&category=<category>` — so he
+  taps and uploads the original. The model cannot push the bytes itself; the
+  claude.ai code sandbox is network-locked and can't reach the server.
+- **Phone / curl / a shortcut:** `POST https://kb.substratesystems.io/upload`
+  multipart (`file`, `scope`, `category`, optional `filename`, `description`) with
+  `Authorization: Bearer $KB_MCP_UPLOAD_TOKEN` (the token is **always** required;
+  Cloudflare Access may sit in front as an extra network gate but the server does
+  not trust its headers). Lands straight in `Evidence/<scope>/<category>/`, zero
+  token cost, ≤25 MB.
+- **Claude Code / desk-side:** the file is already on local disk — write it straight
+  into `Evidence/<scope>/<category>/`, or drop it via Obsidian Sync; the note links it.
+- **`preserve(content_base64=…)`** stays valid only for *genuinely small* artifacts
+  the model truly holds (≤5 MB hard cap). The text-write tools reject base64 blobs
+  outright (`BINARY_BLOB_REJECTED`).
+
 ### Procedure
 1. Determine scope and category folder. Create the folder if it doesn't exist yet. Confirm new scope/category with Hugo first — don't silently invent.
 2. Generate filename if renaming: ISO date prefix where temporal anchoring matters + descriptive slug. Preserve the file's extension as-is.

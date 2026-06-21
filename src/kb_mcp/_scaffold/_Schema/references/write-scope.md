@@ -34,6 +34,8 @@ Is the artifact something you reason from (input to your thinking)?
 
 **Why this matters:** mixing layers dilutes their epistemic discipline. Evidence binaries reasoned over become "sources we lightly analysed," losing the as-received guarantee. Source binaries treated as outputs lose the audit trail of what you read. Note outputs dropped in Evidence pretend to come from outside when they came from you. Keep the layers honest and the categories stay useful.
 
+**How the bytes get there (never base64 through the model):** the tree above is *where* a binary lands; delivery is a separate question of *how*. Encoding a file into a tool argument is billed as model output tokens, so always deliver out-of-band — the `POST /upload` endpoint (or the prefilled `https://kb.substratesystems.io/upload` page when Hugo's on claude.ai web), a desk-side Obsidian Sync drop, or a direct disk write from Claude Code. Full detail: `references/operations.md` § preserve.
+
 ## Writeable paths (Knowledge Base only)
 
 The skill may write to anything inside `<vault>/Knowledge Base/`, subject to per-operation rules:

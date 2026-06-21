@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import secrets
 from pathlib import Path
 
 import mcp.types
@@ -29,8 +30,9 @@ from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from fastmcp.server.auth.providers.github import GitHubTokenVerifier
 from fastmcp.server.middleware.middleware import Middleware, MiddlewareContext
+from starlette.formparsers import MultiPartException
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from . import add as add_module
 from . import append_to_file as append_to_file_module
@@ -46,6 +48,7 @@ from . import edit as edit_module
 from . import find as find_module
 from . import get_frontmatter as get_frontmatter_module
 from . import get_page as get_page_module
+from . import guards
 from . import link as link_module
 from . import list_directory as list_directory_module
 from . import list_inbound_links as list_inbound_links_module
@@ -75,6 +78,18 @@ from .vault import (
 log = logging.getLogger(__name__)
 _call_log = logging.getLogger("kb_mcp.calls")
 
+# Text-write tools → the argument field(s) whose value must not be a base64
+# binary blob. The model pays for those characters as output tokens before the
+# request even arrives, so we reject them at the boundary and point at /upload.
+_GUARDED_WRITE_FIELDS = {
+    "add": ("content",),
+    "note": ("content",),
+    "edit": ("new_body", "new_string"),
+    "replace": ("content",),
+    "create_file": ("content",),
+    "append_to_file": ("content",),
+}
+
 
 class CallTraceMiddleware(Middleware):
     """Per-call traceability: log every tool invocation with name + duration.
@@ -94,6 +109,22 @@ class CallTraceMiddleware(Middleware):
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         import time
         tool_name = _extract_tool_name(context.message)
+        # Reject base64 binary blobs pushed into text-write tools BEFORE dispatch.
+        # Can't refund the output tokens already spent generating the blob — but it
+        # stops the vault being polluted and tells the model to use /upload instead.
+        guarded_fields = _GUARDED_WRITE_FIELDS.get(tool_name)
+        if guarded_fields:
+            args = _extract_tool_args(context.message)
+            for f in guarded_fields:
+                guards.guard_text_content(args.get(f), tool=tool_name, field=f)
+            if tool_name == "edit":
+                for item in args.get("edits") or []:
+                    if isinstance(item, dict):
+                        guards.guard_text_content(
+                            item.get("new_string"),
+                            tool=tool_name,
+                            field="edits[].new_string",
+                        )
         # For find calls, log query + mode + scope so failure modes
         # ("hybrid whiffed on X") are reproducible without a screenshot.
         # Other tools log only tool name + duration — their payloads can be
@@ -336,6 +367,142 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 headers={"Cache-Control": "public, max-age=3600"},
             )
 
+    # ---- Out-of-band binary upload: the token-free path for binaries ----
+    #
+    # The model never carries the bytes. A browser / phone / curl / Claude Code
+    # POSTs multipart/form-data straight into Evidence/, so a multi-MB file costs
+    # ZERO output tokens (unlike base64-through-a-tool-call). See the SKILL
+    # "binary evidence" workflow.
+    #
+    # Reachability: this route is NOT behind the MCP GitHub OAuth (that guards
+    # /mcp). It is publicly reachable via cloudflared, so it carries its OWN auth:
+    # a dedicated bearer token (KB_MCP_UPLOAD_TOKEN). Unset → the route refuses
+    # every request (never an open write hole). NOTE: the claude.ai web code
+    # sandbox is network-locked and CANNOT reach this route; it's for Hugo's
+    # browser / phone / CLI.
+    upload_token = os.environ.get("KB_MCP_UPLOAD_TOKEN", "").strip() or None
+    upload_max_bytes = int(
+        os.environ.get("KB_MCP_UPLOAD_MAX_BYTES", str(preserve_module.MAX_UPLOAD_BYTES))
+    )
+
+    def _upload_authorized(request: Request) -> bool:
+        # A bearer-token match is the ONLY thing that authorizes. We deliberately
+        # do NOT trust any `Cf-Access-*` request header: those are client-spoofable
+        # by anything that reaches the origin directly (a localhost process, the
+        # Tailscale fallback, a misrouted tunnel). Cloudflare Access, if used, sits
+        # in FRONT as a network gate; trusting its assertion *in-app* would require
+        # verifying the signed Cf-Access-Jwt-Assertion against the team JWKS
+        # (issuer / aud / exp) — a documented fast-follow, never a bare header check.
+        if upload_token is None:
+            return False
+        header = request.headers.get("authorization", "")
+        if header.startswith("Bearer "):
+            presented = header[len("Bearer ") :].strip()
+            if secrets.compare_digest(presented, upload_token):
+                return True
+        return False
+
+    @mcp.custom_route("/upload", methods=["POST"])
+    async def _upload(request: Request) -> JSONResponse:
+        if upload_token is None:
+            return JSONResponse(
+                {"code": "UPLOAD_DISABLED", "reason": "uploads are off: set KB_MCP_UPLOAD_TOKEN"},
+                status_code=503,
+            )
+        if not _upload_authorized(request):
+            return JSONResponse(
+                {"code": "UNAUTHORIZED", "reason": "missing or invalid upload credential"},
+                status_code=401,
+            )
+        try:
+            form = await request.form(max_part_size=upload_max_bytes)
+        except MultiPartException as e:
+            return JSONResponse(
+                {
+                    "code": "TOO_LARGE",
+                    "reason": f"upload rejected (exceeds {upload_max_bytes:,}-byte "
+                    f"limit or malformed): {e}",
+                },
+                status_code=413,
+            )
+        upload = form.get("file")
+        if not hasattr(upload, "read"):
+            return JSONResponse(
+                {"code": "INVALID_UPLOAD", "reason": "multipart field `file` is required"},
+                status_code=400,
+            )
+        scope = str(form.get("scope") or "").strip()
+        category = str(form.get("category") or "").strip()
+        description = str(form.get("description") or "").strip() or None
+        filename = str(form.get("filename") or "").strip() or (
+            getattr(upload, "filename", "") or ""
+        )
+        data = await upload.read()
+        if len(data) > upload_max_bytes:
+            return JSONResponse(
+                {
+                    "code": "TOO_LARGE",
+                    "reason": f"{len(data):,} bytes exceeds the "
+                    f"{upload_max_bytes:,}-byte upload limit",
+                },
+                status_code=413,
+            )
+        try:
+            result = preserve_module.preserve_bytes(
+                vault_root,
+                scope=scope,
+                category=category,
+                filename=filename,
+                data=data,
+                description=description,
+                max_bytes=upload_max_bytes,
+            )
+        except preserve_module.PreserveError as e:
+            status = {
+                "ARTIFACT_EXISTS": 409,
+                "TOO_LARGE": 413,
+                "INVALID_PRESERVE": 400,
+            }.get(e.code, 400)
+            return JSONResponse(
+                {"code": e.code, "reason": e.reason, "missing": e.missing},
+                status_code=status,
+            )
+        return JSONResponse(result.as_dict(), status_code=201)
+
+    @mcp.custom_route("/upload", methods=["GET"])
+    async def _upload_form(request: Request) -> HTMLResponse:
+        # Minimal browser/phone uploader. Behind Cloudflare Access it just works;
+        # otherwise paste the upload token. scope/category/description prefill from
+        # query params so Claude can hand over a ready-to-tap link.
+        q = request.query_params
+
+        def _attr(name: str) -> str:
+            return (q.get(name) or "").replace('"', "&quot;")
+
+        html = f"""<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>kb-mcp upload</title>
+<style>body{{font:16px system-ui;max-width:34rem;margin:2rem auto;padding:0 1rem}}
+label{{display:block;margin:.75rem 0 .2rem}}input{{width:100%;padding:.5rem;font:inherit}}
+button{{margin-top:1rem;padding:.6rem 1rem;font:inherit}}#out{{margin-top:1rem;white-space:pre-wrap}}</style>
+<h1>Add evidence to the KB</h1>
+<form id=f>
+<label>File</label><input type=file name=file required>
+<label>Scope</label><input name=scope value="{_attr('scope')}" placeholder="e.g. Yolo" required>
+<label>Category</label><input name=category value="{_attr('category')}" placeholder="e.g. 01 - Check-in" required>
+<label>Filename (optional)</label><input name=filename value="{_attr('filename')}">
+<label>Description (optional)</label><input name=description value="{_attr('description')}">
+<label>Upload token (required)</label><input name=token type=password required>
+<button type=submit>Upload</button></form>
+<div id=out></div>
+<script>
+f.onsubmit=async e=>{{e.preventDefault();const fd=new FormData(f);const t=fd.get('token');fd.delete('token');
+const h={{}};if(t)h['Authorization']='Bearer '+t;out.textContent='Uploading…';
+try{{const r=await fetch('/upload',{{method:'POST',body:fd,headers:h}});
+out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error: '+err}}}};
+</script>"""
+        return HTMLResponse(html)
+
     @mcp.tool
     def find(
         query: str = "",
@@ -532,7 +699,9 @@ def build_server(*, require_auth: bool) -> FastMCP:
         + Counts), and log.md. Per SKILL.md rule 7.
 
         Args:
-            content: Full text body to capture (markdown OK).
+            content: Full text body to capture (markdown/plain text only —
+                NEVER a base64-encoded binary; for files use the /upload
+                endpoint or `preserve`).
             source_type: One of article, session, book, paper, video, other.
             title: Human title; used to derive the filename slug.
             url: Required when source_type is article, paper, or video.
@@ -1328,7 +1497,10 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
         Exactly one of `content_base64` or `content` must be supplied:
         - `content_base64`: file bytes (binaries — PDF, images, .docx).
-          5MB decoded size limit.
+          5MB decoded size limit. PREFER the out-of-band POST /upload endpoint
+          for anything but tiny files — base64 here is billed as output tokens,
+          so a multi-MB file is very expensive. /upload carries the bytes with
+          zero token cost.
         - `content`: UTF-8 text (markdown, plain text, transcripts).
 
         Args:
@@ -1501,7 +1673,8 @@ def build_server(*, require_auth: bool) -> FastMCP:
         Args:
             path: Vault-relative, e.g. `Knowledge Base/Identity/Career.md`.
                 Forward or back slashes accepted. Path-escape guarded.
-            content: File body (or full file if `frontmatter` is None).
+            content: File body (or full file if `frontmatter` is None). Text
+                only — never a base64-encoded binary; for files use /upload.
             frontmatter: Optional dict prepended as YAML frontmatter.
             overwrite: If true, replace existing file. Default false.
             allow_curated: Required to write under a curated tree. Default false.
@@ -1720,7 +1893,7 @@ def build_server(*, require_auth: bool) -> FastMCP:
 
         Args:
             path: Vault-relative.
-            content: Text to append.
+            content: Text to append (text only — never base64 binary).
             allow_curated: Required under curated trees.
 
         Returns: {path, bytes_appended, warnings}.
