@@ -1,11 +1,13 @@
 # kb-mcp
 
-Self-hosted Model Context Protocol server exposing Hugo's Obsidian
-Knowledge Base to **mobile claude.ai** as a remote custom connector.
+Self-hosted Model Context Protocol server that is the **primary interface to
+Hugo's Obsidian Knowledge Base** — full parity with the desk-side KB skill,
+reachable from Claude Code (desktop/laptop) and from claude.ai on mobile as a
+remote custom connector.
 
 > **Just want to run it locally in Claude Code over your own vault (no cloud,
 > no OAuth)?** See **[SETUP-FRIEND.md](SETUP-FRIEND.md)** — the ~20-minute local
-> path. This README covers the heavier remote/mobile deployment.
+> path. This README covers the heavier remote deployment (OAuth + tunnel).
 
 Tools surfaced (full parity with the desk-side KB skill except `schema`):
 
