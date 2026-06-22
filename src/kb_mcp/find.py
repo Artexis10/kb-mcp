@@ -126,6 +126,18 @@ class ParsedPage:
         t = self.frontmatter.get("tags") or []
         return [str(x).lower() for x in t] if isinstance(t, list) else []
 
+    @property
+    def media_type(self) -> str | None:
+        """audio/video/image/pdf on an Evidence media sidecar, else None."""
+        mt = self.frontmatter.get("media_type")
+        return str(mt) if mt else None
+
+    @property
+    def media_file(self) -> str | None:
+        """Vault-relative pointer to the original binary this sidecar describes."""
+        ef = self.frontmatter.get("evidence_file")
+        return str(ef) if ef else None
+
 
 @dataclass
 class Hit:
@@ -153,6 +165,12 @@ class Hit:
     # search reached past the curated KB into the wider vault. Omitted from
     # as_dict() when False so KB-scoped callers don't see noise.
     outside_kb: bool = False
+    # Set when the hit is an Evidence media sidecar — `media_type` is
+    # audio/video/image/pdf and `media_file` points at the original binary, so the
+    # caller surfaces the FILE as the result (and can mint_download_token it),
+    # with the matched transcript/OCR text as the "why". Omitted when absent.
+    media_type: str | None = None
+    media_file: str | None = None
 
     def as_dict(self) -> dict:
         out: dict = {
@@ -163,6 +181,10 @@ class Hit:
             "updated": self.updated,
             "excerpt": self.excerpt,
         }
+        if self.media_type:
+            out["media_type"] = self.media_type
+        if self.media_file:
+            out["media_file"] = self.media_file
         if self.outside_kb:
             out["outside_kb"] = True
         signals: dict = {}
@@ -390,6 +412,8 @@ def _find_keyword(
                     title=page.title,
                     updated=page.updated,
                     excerpt=excerpt or "",
+                    media_type=page.media_type,
+                    media_file=page.media_file,
                 ),
             )
         )
@@ -602,6 +626,8 @@ def _find_semantic(
             title=page.title,
             updated=page.updated,
             excerpt=excerpt or "",
+            media_type=page.media_type,
+            media_file=page.media_file,
             bm25_rank=bm25_rank_by_path.get(rel_path),
             vector_rank=vector_rank_by_path.get(rel_path),
             vector_score=vector_score_by_path.get(rel_path),
@@ -715,6 +741,8 @@ def _find_outside_kb(
             title=page.title,
             updated=page.updated,
             excerpt=excerpt or "",
+            media_type=page.media_type,
+            media_file=page.media_file,
             outside_kb=True,
         ))
         if len(hits) >= limit:
@@ -800,7 +828,12 @@ def _apply_type_boost(
     adjusted: list[tuple[str, float]] = []
     for path, score in fused:
         page = _CACHE.get(vault_root / path, vault_root)
-        mult = _type_multiplier(page.page_type if page else None, config)
+        if page is not None and page.media_type:
+            # A media sidecar is `type: source`, but the binary it points at IS the
+            # answer — exempt it from the source penalty so it ranks on its content.
+            mult = 1.0
+        else:
+            mult = _type_multiplier(page.page_type if page else None, config)
         adjusted.append((path, score * mult))
     adjusted.sort(key=lambda t: (-t[1], t[0]))
     return adjusted

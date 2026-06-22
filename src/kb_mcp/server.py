@@ -47,6 +47,7 @@ from . import create_file as create_file_module
 from . import delete_directory as delete_directory_module
 from . import delete_file as delete_file_module
 from . import edit as edit_module
+from . import extract
 from . import find as find_module
 from . import get_frontmatter as get_frontmatter_module
 from . import get_page as get_page_module
@@ -303,6 +304,20 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 "pay the cost", e,
             )
 
+    # Media-extraction worker: transcribes/OCRs binaries uploaded without text, off
+    # the request path, and fills their sidecars (then re-embeds). Disabled in tests
+    # and on lean boxes via KB_MCP_DISABLE_MEDIA_EXTRACTION (mirrors the embeddings flag).
+    media_worker = None
+    if extract.extraction_enabled():
+        from . import media_worker as media_worker_module
+
+        media_worker = media_worker_module.MediaWorker(vault_root)
+        media_worker.start()
+        try:
+            media_worker.scan_pending()  # re-enqueue anything a prior run left pending
+        except Exception as e:  # noqa: BLE001 — startup scan is best-effort
+            log.warning("media worker startup scan failed: %s", e)
+
     # Public base URL (e.g. https://kb.substratesystems.io). Used by the OAuth
     # discovery route AND the mint_upload_token tool, so define it unconditionally.
     base_url = os.environ.get("KB_MCP_BASE_URL", "").strip().rstrip("/")
@@ -495,6 +510,17 @@ def build_server(*, require_auth: bool) -> FastMCP:
                 {"code": e.code, "reason": e.reason, "missing": e.missing},
                 status_code=status,
             )
+        # Server-side extraction for a media binary uploaded WITHOUT text: the worker
+        # transcribes/OCRs it and fills the (pending) sidecar off the request path, so
+        # the 201 returns now. If the sandbox already supplied `text`, skip — it's done.
+        if media_worker is not None and text is None and result.sidecar_path:
+            media_type = extract.media_type_for(filename)
+            if media_type:
+                media_worker.enqueue(
+                    binary_path=vault_root / result.path,
+                    sidecar_path=vault_root / result.sidecar_path,
+                    media_type=media_type,
+                )
         return JSONResponse(result.as_dict(), status_code=201)
 
     @mcp.custom_route("/upload", methods=["GET"])
