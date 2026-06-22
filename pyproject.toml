@@ -29,6 +29,26 @@ embeddings = [
     "sentence-transformers>=2.7",
     "torch>=2.12",
 ]
+# Server-side media extraction (transduction, not a brain): ASR for audio/video,
+# OCR for images, text for PDFs. Optional so a lean box runs without it — the code
+# soft-falls back (server extraction skipped; the model-driven /upload `text` path
+# still works). Full install (Hugo's deployment): `uv sync --extra embeddings --extra media`.
+# System deps NOT pip-installable: Tesseract (image OCR) — `winget install UB-Mannheim.TesseractOCR`.
+# faster-whisper bundles its CUDA runtime via ctranslate2; PyAV (pulled by faster-whisper)
+# bundles ffmpeg for audio/video decode. See README for the Blackwell sm_120 note.
+media = [
+    "faster-whisper>=1.0",
+    "pytesseract>=0.3.10",
+    "pymupdf>=1.24",
+    # CUDA-12 runtime for faster-whisper/ctranslate2 on Windows. torch+cu132 ships
+    # cuBLAS *13* (different major), so ctranslate2's CUDA-12 cuBLAS + cudart must be
+    # supplied separately and their bin dirs put on PATH before load — see
+    # extract._ensure_cuda_dll_path(). Verified on an RTX 5080 (sm_120). On Linux,
+    # ctranslate2 resolves CUDA via the wheels' RPATH; see README if a GPU box needs them.
+    "nvidia-cublas-cu12; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12; sys_platform == 'win32'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'win32'",
+]
 
 [dependency-groups]
 dev = [

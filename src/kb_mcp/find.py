@@ -126,6 +126,18 @@ class ParsedPage:
         t = self.frontmatter.get("tags") or []
         return [str(x).lower() for x in t] if isinstance(t, list) else []
 
+    @property
+    def media_type(self) -> str | None:
+        """audio/video/image/pdf on an Evidence media sidecar, else None."""
+        mt = self.frontmatter.get("media_type")
+        return str(mt) if mt else None
+
+    @property
+    def media_file(self) -> str | None:
+        """Vault-relative pointer to the original binary this sidecar describes."""
+        ef = self.frontmatter.get("evidence_file")
+        return str(ef) if ef else None
+
 
 @dataclass
 class Hit:
@@ -144,6 +156,8 @@ class Hit:
     bm25_rank: int | None = None
     vector_rank: int | None = None
     vector_score: float | None = None
+    clip_rank: int | None = None      # rank from CLIP text→image visual search
+    clip_score: float | None = None   # CLIP cosine similarity (image vs the query)
     graph_hop: bool = False
     graph_in_degree: int = 0
     keyword_rank: int | None = None
@@ -153,6 +167,12 @@ class Hit:
     # search reached past the curated KB into the wider vault. Omitted from
     # as_dict() when False so KB-scoped callers don't see noise.
     outside_kb: bool = False
+    # Set when the hit is an Evidence media sidecar — `media_type` is
+    # audio/video/image/pdf and `media_file` points at the original binary, so the
+    # caller surfaces the FILE as the result (and can mint_download_token it),
+    # with the matched transcript/OCR text as the "why". Omitted when absent.
+    media_type: str | None = None
+    media_file: str | None = None
 
     def as_dict(self) -> dict:
         out: dict = {
@@ -163,6 +183,10 @@ class Hit:
             "updated": self.updated,
             "excerpt": self.excerpt,
         }
+        if self.media_type:
+            out["media_type"] = self.media_type
+        if self.media_file:
+            out["media_file"] = self.media_file
         if self.outside_kb:
             out["outside_kb"] = True
         signals: dict = {}
@@ -172,6 +196,10 @@ class Hit:
             signals["vector_rank"] = self.vector_rank
         if self.vector_score is not None:
             signals["vector_score"] = round(self.vector_score, 4)
+        if self.clip_rank is not None:
+            signals["clip_rank"] = self.clip_rank
+        if self.clip_score is not None:
+            signals["clip_score"] = round(self.clip_score, 4)
         if self.graph_hop:
             signals["graph_hop"] = True
         if self.graph_in_degree:
@@ -390,6 +418,8 @@ def _find_keyword(
                     title=page.title,
                     updated=page.updated,
                     excerpt=excerpt or "",
+                    media_type=page.media_type,
+                    media_file=page.media_file,
                 ),
             )
         )
@@ -448,10 +478,30 @@ def _find_semantic(
     except Exception as e:
         log.warning("vector search failed: %s; falling back to BM25-only", e)
 
+    # ---- CLIP contribution: text→image visual search ----
+    # Lets a text query match a (possibly textless) Evidence photo by visual content.
+    # Returns the image's *sidecar* path (what the corpus indexes); soft-fails when CLIP
+    # isn't installed or the index is empty. Gated by KB_MCP_DISABLE_CLIP.
+    clip_ranking: list[str] = []
+    clip_score_by_path: dict[str, float] = {}
+    if embeddings.clip_enabled() and query.strip():
+        try:
+            clip_idx = embeddings.ClipIndex(vault_root)
+            clip_qvec = embeddings.embed_clip_text(query)
+            for img_rel, score in clip_idx.search(clip_qvec, k=candidate_k):
+                sidecar_rel = img_rel + ".md"
+                if sidecar_rel not in clip_score_by_path and (vault_root / sidecar_rel).exists():
+                    clip_ranking.append(sidecar_rel)
+                    clip_score_by_path[sidecar_rel] = score
+        except embeddings.ClipUnavailable as e:
+            log.warning("CLIP search unavailable (%s); skipping image search", e)
+        except Exception as e:  # noqa: BLE001 — image search is best-effort
+            log.warning("CLIP search failed: %s; skipping image search", e)
+
     bm25_ranking: list[str] = []
     keyword_ranking: list[str] = []
     if mode == "vector":
-        rankings = [vector_ranking] if vector_ranking else []
+        rankings = [r for r in (vector_ranking, clip_ranking) if r]
     else:
         # ---- BM25 contribution ----
         try:
@@ -471,7 +521,7 @@ def _find_semantic(
         # under Q marketing pages on the "market" stem).
         keyword_ranking = _keyword_match_paths(vault_root, query_norm, scope)
         rankings = [
-            r for r in (vector_ranking, bm25_ranking, keyword_ranking) if r
+            r for r in (vector_ranking, bm25_ranking, keyword_ranking, clip_ranking) if r
         ]
 
     # ---- Graph expansion: 1-hop outbound wikilinks of STRONG candidates ----
@@ -526,7 +576,9 @@ def _find_semantic(
     vector_rank_by_path = {p: i + 1 for i, p in enumerate(vector_ranking)}
     bm25_rank_by_path = {p: i + 1 for i, p in enumerate(bm25_ranking)}
     keyword_rank_by_path = {p: i + 1 for i, p in enumerate(keyword_ranking)}
+    clip_rank_by_path = {p: i + 1 for i, p in enumerate(clip_ranking)}
     keyword_set: set[str] = set(keyword_ranking)
+    clip_set: set[str] = set(clip_ranking)
     graph_set = set(graph_ranking)
 
     if not rankings:
@@ -574,6 +626,7 @@ def _find_semantic(
             rel_path not in vector_paths
             and rel_path not in graph_set
             and rel_path not in keyword_set
+            and rel_path not in clip_set
             and keyword_excerpt is None
         ):
             # No literal match, not a graph hop, not vector-ranked, not in
@@ -582,10 +635,10 @@ def _find_semantic(
             if not _stem_tokens_present(page, query_norm):
                 continue
             keyword_excerpt = _stem_anchored_excerpt(page, query_norm)
-        elif rel_path in graph_set and keyword_excerpt is None:
-            # Graph-hop neighbour: no all-tokens-present requirement. The
-            # rationale for surfacing is connectivity to a strong match,
-            # not lexical overlap with the query. Use leading body snippet.
+        elif (rel_path in graph_set or rel_path in clip_set) and keyword_excerpt is None:
+            # Graph-hop neighbour or CLIP visual match: no all-tokens-present
+            # requirement (the reason for surfacing is connectivity / visual
+            # similarity, not lexical overlap). Use the sidecar's leading body.
             body = page.body.strip()
             keyword_excerpt = _collapse(body[:EXCERPT_MAX_LEN]) if body else ""
         chunk = chunk_text_by_path.get(rel_path)
@@ -602,9 +655,13 @@ def _find_semantic(
             title=page.title,
             updated=page.updated,
             excerpt=excerpt or "",
+            media_type=page.media_type,
+            media_file=page.media_file,
             bm25_rank=bm25_rank_by_path.get(rel_path),
             vector_rank=vector_rank_by_path.get(rel_path),
             vector_score=vector_score_by_path.get(rel_path),
+            clip_rank=clip_rank_by_path.get(rel_path),
+            clip_score=clip_score_by_path.get(rel_path),
             graph_hop=is_graph_only,
             graph_in_degree=graph_in_degree_by_path.get(rel_path, 0),
             keyword_rank=keyword_rank_by_path.get(rel_path),
@@ -715,6 +772,8 @@ def _find_outside_kb(
             title=page.title,
             updated=page.updated,
             excerpt=excerpt or "",
+            media_type=page.media_type,
+            media_file=page.media_file,
             outside_kb=True,
         ))
         if len(hits) >= limit:
@@ -800,7 +859,12 @@ def _apply_type_boost(
     adjusted: list[tuple[str, float]] = []
     for path, score in fused:
         page = _CACHE.get(vault_root / path, vault_root)
-        mult = _type_multiplier(page.page_type if page else None, config)
+        if page is not None and page.media_type:
+            # A media sidecar is `type: source`, but the binary it points at IS the
+            # answer — exempt it from the source penalty so it ranks on its content.
+            mult = 1.0
+        else:
+            mult = _type_multiplier(page.page_type if page else None, config)
         adjusted.append((path, score * mult))
     adjusted.sort(key=lambda t: (-t[1], t[0]))
     return adjusted

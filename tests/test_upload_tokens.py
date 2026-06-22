@@ -70,3 +70,24 @@ def test_mint_for_endpoint_large_url_when_configured() -> None:
     assert out["upload_url"] == "https://kb.example.io/upload"
     assert out["large_upload_url"] == "https://big.example.ts.net/upload"
     assert upload_tokens.verify(out["token"], SECRET) is True
+
+
+# ---------------- scope isolation (upload vs download) ----------------
+
+
+def test_scope_isolation() -> None:
+    up = upload_tokens.mint(SECRET, scope="upload", now=1000)
+    dn = upload_tokens.mint(SECRET, scope="download", now=1000)
+    assert upload_tokens.verify(up, SECRET, scope="upload", now=1000) is True
+    assert upload_tokens.verify(up, SECRET, scope="download", now=1000) is False
+    assert upload_tokens.verify(dn, SECRET, scope="download", now=1000) is True
+    assert upload_tokens.verify(dn, SECRET, scope="upload", now=1000) is False
+
+
+def test_mint_for_endpoint_download() -> None:
+    out = upload_tokens.mint_for_endpoint(SECRET, "https://kb.example.io", scope="download")
+    assert out["download_url"] == "https://kb.example.io/download"
+    assert out["ttl_seconds"] == upload_tokens.DEFAULT_TTL
+    assert upload_tokens.verify(out["token"], SECRET, scope="download") is True
+    with pytest.raises(ValueError, match="DOWNLOAD_DISABLED"):
+        upload_tokens.mint_for_endpoint(None, "https://kb.example.io", scope="download")

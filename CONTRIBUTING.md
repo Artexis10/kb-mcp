@@ -1,5 +1,20 @@
 # Maintainer notes
 
+## One worktree per change (sessions share a checkout)
+
+This repo is often edited by several Claude Code sessions at once over a single
+checkout, so switching branches or stashing in the main working tree disrupts the
+other session. Do every new change in its own git worktree:
+
+```
+git worktree add ../kb-mcp-<topic> -b <branch>
+# work, commit, push from the worktree
+git worktree remove ../kb-mcp-<topic>
+```
+
+Commit and push from the worktree; leave the primary checkout on whatever branch
+the other session is using.
+
 ## The skill scaffold is generated — don't hand-edit it
 
 `src/kb_mcp/_scaffold/_Schema/` (the skill shipped to friends via `init` /

@@ -25,18 +25,20 @@ PREFIX = "v1."
 DEFAULT_TTL = 900  # 15 minutes
 
 
-def _sig(secret: str, exp: int) -> str:
-    return hmac.new(secret.encode(), f"upload:{exp}".encode(), hashlib.sha256).hexdigest()
+def _sig(secret: str, scope: str, exp: int) -> str:
+    # The scope is part of the signed message, so an `upload` token can't be
+    # replayed against `/download` (and vice-versa) even with the same secret.
+    return hmac.new(secret.encode(), f"{scope}:{exp}".encode(), hashlib.sha256).hexdigest()
 
 
-def mint(secret: str, *, ttl: int = DEFAULT_TTL, now: int | None = None) -> str:
-    """Return a short-lived token valid for `ttl` seconds, signed with `secret`."""
+def mint(secret: str, *, scope: str = "upload", ttl: int = DEFAULT_TTL, now: int | None = None) -> str:
+    """Return a short-lived token for `scope`, valid `ttl` seconds, signed with `secret`."""
     exp = int(now if now is not None else time.time()) + ttl
-    return f"{PREFIX}{exp}.{_sig(secret, exp)}"
+    return f"{PREFIX}{exp}.{_sig(secret, scope, exp)}"
 
 
-def verify(presented: str | None, secret: str, *, now: int | None = None) -> bool:
-    """True iff `presented` is a well-formed, unexpired token signed with `secret`."""
+def verify(presented: str | None, secret: str, *, scope: str = "upload", now: int | None = None) -> bool:
+    """True iff `presented` is a well-formed, unexpired token for `scope` signed with `secret`."""
     if not presented or not presented.startswith(PREFIX):
         return False
     parts = presented.split(".")
@@ -49,27 +51,33 @@ def verify(presented: str | None, secret: str, *, now: int | None = None) -> boo
     now_i = int(now if now is not None else time.time())
     if now_i > exp:
         return False
-    return hmac.compare_digest(sig, _sig(secret, exp))
+    return hmac.compare_digest(sig, _sig(secret, scope, exp))
 
 
 def mint_for_endpoint(
-    secret: str | None, base_url: str, large_base_url: str | None = None
+    secret: str | None,
+    base_url: str,
+    *,
+    scope: str = "upload",
+    large_base_url: str | None = None,
 ) -> dict:
-    """Response payload for the `mint_upload_token` MCP tool (or raise if off).
+    """Response payload for the `mint_<scope>_token` MCP tools (or raise if off).
 
+    `scope` is "upload" or "download". Returns `{token, ttl_seconds, <scope>_url}`.
     Kept here, not inline in the tool closure, so it's unit-testable without the
     FastMCP machinery. Raising ValueError matches the tool→ValueError convention.
 
-    When `large_base_url` is set, also returns `large_upload_url` — an alternate
-    endpoint (e.g. a Tailscale Funnel) NOT behind the ~100 MB Cloudflare edge cap,
-    for uploads larger than that. The same minted token authenticates on both.
+    When `large_base_url` is set (upload scope), also returns `large_upload_url` —
+    an alternate endpoint (e.g. a Tailscale Funnel) NOT behind the ~100 MB
+    Cloudflare edge cap, for uploads larger than that. The same minted token
+    authenticates on both.
     """
     if secret is None:
-        raise ValueError("UPLOAD_DISABLED: server has no KB_MCP_UPLOAD_TOKEN configured")
+        raise ValueError(f"{scope.upper()}_DISABLED: server has no KB_MCP_UPLOAD_TOKEN configured")
     out = {
-        "token": mint(secret),
+        "token": mint(secret, scope=scope),
         "ttl_seconds": DEFAULT_TTL,
-        "upload_url": f"{base_url}/upload",
+        f"{scope}_url": f"{base_url}/{scope}",
     }
     if large_base_url:
         out["large_upload_url"] = f"{large_base_url}/upload"
