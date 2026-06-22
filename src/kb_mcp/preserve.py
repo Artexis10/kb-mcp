@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from . import indexes
+from . import extract, indexes
 from .vault import PlannedWrite, batch_atomic_write, escape_wikilinks_for_log, kb_root
 
 
@@ -182,6 +182,7 @@ def preserve(
             written_artifact = True
 
         writes: list[PlannedWrite] = []
+        rel_artifact = artifact_path.relative_to(vault_root).as_posix()
 
         # Optional sidecar. Written when there's a short `description` caption
         # and/or full extracted `text` (the OCR companion that makes a binary
@@ -191,7 +192,13 @@ def preserve(
         # the sidecar belongs alongside, not as a double-ext twin of the artifact.
         desc_clean = description.strip() if description and description.strip() else None
         text_clean = text.strip() if text and text.strip() else None
-        if desc_clean or text_clean:
+        # A media binary (audio/video/image/pdf) with no provided text gets a STUB
+        # sidecar — pointer + media_type + `extracted_by: pending` — so it's a
+        # first-class find() result immediately and the extraction worker fills the
+        # text later. Only when server extraction is enabled (else nothing fills it).
+        media_type = extract.media_type_for(filename_safe)
+        want_stub = media_type is not None and not text_clean and extract.extraction_enabled()
+        if desc_clean or text_clean or want_stub:
             if filename_safe.lower().endswith(".md"):
                 stem = filename_safe[:-3]
                 sidecar_path = folder / f"{stem}-notes.md"
@@ -202,6 +209,12 @@ def preserve(
                     f"sidecar {sidecar_path.name!r} already exists; skipped."
                 )
             else:
+                if text_clean:
+                    extracted_by = "upload"   # the uploader/sandbox supplied the text
+                elif want_stub:
+                    extracted_by = "pending"  # the worker will fill it
+                else:
+                    extracted_by = None
                 sidecar_md = _render_sidecar(
                     artifact_name=filename_safe,
                     scope=scope_safe,
@@ -209,12 +222,14 @@ def preserve(
                     date_iso=date_iso,
                     description=desc_clean,
                     text=text_clean,
+                    media_type=media_type,
+                    evidence_file=rel_artifact if media_type else None,
+                    extracted_by=extracted_by,
                 )
                 writes.append(PlannedWrite(path=sidecar_path, content=sidecar_md))
                 sidecar_rel = sidecar_path.relative_to(vault_root).as_posix()
 
         # Index + log updates.
-        rel_artifact = artifact_path.relative_to(vault_root).as_posix()
         rel_artifact_for_summary = rel_artifact.replace("Knowledge Base/", "")
         activity_summary = (
             f"`{rel_artifact_for_summary}` (evidence, {scope_safe}/{category_safe}, "
@@ -417,6 +432,9 @@ def _render_sidecar(
     date_iso: str,
     description: str | None = None,
     text: str | None = None,
+    media_type: str | None = None,
+    evidence_file: str | None = None,
+    extracted_by: str | None = None,
 ) -> str:
     """Sidecar .md describing a preserved binary artifact.
 
@@ -428,11 +446,23 @@ def _render_sidecar(
     content of the artifact. Either or both may be present (the caller only
     writes a sidecar when at least one is). The `## Extracted text` body is what
     makes an otherwise-opaque binary findable once the sidecar is embedded.
+
+    For a media binary the frontmatter also carries `media_type`
+    (audio/video/image/pdf), `evidence_file` (a vault-relative pointer to the
+    original), and `extracted_by` (`pending` until the extraction worker fills
+    the text, then the engine string; `upload` when the uploader supplied it).
+    These make the binary a first-class `find()` result that points at the file.
     """
     lines = ["---"]
     lines.append("type: source")
     lines.append("source_type: other")
     lines.append(f"captured: {date_iso}")
+    if media_type:
+        lines.append(f"media_type: {media_type}")
+    if evidence_file:
+        lines.append(f"evidence_file: {evidence_file}")
+    if extracted_by:
+        lines.append(f"extracted_by: {extracted_by}")
     lines.append(f"tags: [evidence, {scope.lower().replace(' ', '-')}, {category.lower().replace(' ', '-')}]")
     lines.append("ingested_into: []")
     lines.append("---")
@@ -446,12 +476,63 @@ def _render_sidecar(
         lines.append("")
         lines.append(description)
         lines.append("")
-    if text:
+    # Emit the section when there's extracted text, or as an empty anchor for a
+    # media stub the worker will fill. A pure-description (non-media) sidecar omits it.
+    if text or media_type:
         lines.append("## Extracted text")
         lines.append("")
-        lines.append(text)
-        lines.append("")
+        if text:
+            lines.append(text)
+            lines.append("")
     return "\n".join(lines)
+
+
+_EXTRACTED_HEADING = "## Extracted text"
+
+
+def update_sidecar_extraction(
+    vault_root: Path, sidecar_path: Path, *, text: str, engine: str
+) -> None:
+    """Fill a pending media sidecar with extracted text + engine, and re-embed.
+
+    Called by the extraction worker once ASR/OCR/PDF text is ready: sets
+    `extracted_by: <engine>` in the frontmatter and replaces the `## Extracted text`
+    body, then writes via `batch_atomic_write(vault_root=)` so the sidecar is
+    re-embedded and immediately findable by its content. `engine` may be a
+    `failed: …` marker so a permanent failure stops the restart re-enqueue loop.
+    """
+    content = sidecar_path.read_text(encoding="utf-8")
+    content = _set_frontmatter_field(content, "extracted_by", engine)
+    content = _set_extracted_text(content, text)
+    batch_atomic_write([PlannedWrite(path=sidecar_path, content=content)], vault_root=vault_root)
+
+
+def _set_frontmatter_field(content: str, field: str, value: str) -> str:
+    """Set `field: value` in the leading `---` frontmatter (replace or insert)."""
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    head, body = content[:end], content[end:]
+    pattern = re.compile(rf"(?m)^{re.escape(field)}:.*$")
+    if pattern.search(head):
+        head = pattern.sub(f"{field}: {value}", head, count=1)
+    else:
+        head = head.rstrip("\n") + f"\n{field}: {value}"
+    return head + body
+
+
+def _set_extracted_text(content: str, text: str) -> str:
+    """Replace the body under `## Extracted text` (to the next `## ` or EOF), or append."""
+    block = f"{_EXTRACTED_HEADING}\n\n{text}\n"
+    idx = content.find(_EXTRACTED_HEADING)
+    if idx == -1:
+        return content.rstrip("\n") + "\n\n" + block
+    after = content.find("\n## ", idx + len(_EXTRACTED_HEADING))
+    if after == -1:
+        return content[:idx] + block
+    return content[:idx] + block + "\n" + content[after + 1 :]
 
 
 def _prepend_log_entry(
