@@ -1,5 +1,22 @@
 # kb-mcp — instructions for Claude
 
+## Concurrent sessions share ONE checkout — work in a worktree
+
+This repo is often worked on by more than one Claude Code session at the same
+time, all sharing a single working tree. `git checkout <branch>` or `git stash`
+in that shared checkout yanks files out from under the other session (it has
+already caused a mid-edit collision).
+
+**Rule: never switch branches or `git stash` in the primary checkout.** For ANY
+new change — feature, fix, or docs — work in a dedicated git worktree and
+commit/push from there, leaving the primary checkout on whatever branch the other
+session is using.
+
+- Native (Claude Code): `EnterWorktree` — branches off `origin/main`; edit,
+  commit, `git push origin HEAD:main` (or open a PR), then `ExitWorktree`.
+- Manual: `git worktree add ../kb-mcp-<topic> -b <branch>`; work, commit, push;
+  then `git worktree remove ../kb-mcp-<topic>`.
+
 ## Editing the skill — BUMP THE VERSION (this keeps getting missed)
 
 The knowledge-base skill's canonical source is the **vault** `_Schema/`
