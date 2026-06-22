@@ -779,7 +779,9 @@ source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "numpy" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
     { name = "python-slugify" },
     { name = "pyyaml" },
     { name = "rank-bm25" },
@@ -803,7 +805,9 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.10" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-slugify", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },

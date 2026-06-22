@@ -163,6 +163,35 @@ These two updates are non-negotiable for every operation below. The per-operatio
 - Category — a numbered subfolder under the scope (e.g., `01 - Warning Letter 2026-05-15`, `02 - Promotion Track Evidence`). Use existing categories where they fit; create new ones only when none apply.
 - Optional: descriptive filename if the original is generic (e.g., rename `Screenshot 2026-05-15 at 23.14.png` to `2026-05-15-slack-jovany-king-of-ai-statement.png`)
 
+### Delivering the bytes — out-of-band (never inline through the model)
+
+Binaries are delivered out-of-band — never inline as a tool argument (the `preserve`
+tool takes text only). Pick the channel by where the file actually is:
+
+- **On claude.ai web — hands-off (preferred):** the model can't *emit* the bytes, but
+  it has two channels — the authenticated MCP connector and a code sandbox holding the
+  user's **attached** files. So: (1) call the **`mint_upload_token`** tool → a
+  short-lived `{token, ttl_seconds, upload_url}`; (2) in the sandbox, multipart-`curl`
+  each attached file to `upload_url` with `Authorization: Bearer <token>` and form
+  fields `file` / `scope` / `category` (optional `filename`, `description`);
+  (3) write the searchable text manifest via `preserve` / `note`. No inline bytes, no pasted
+  secret. **Two requirements:** files must be **attached** (inline-pasted images never
+  land on the sandbox disk and can't be sent), and the host must be in the sandbox's
+  egress allowlist (Settings → network; `*.substratesystems.io`, one-time). If the
+  sandbox still can't reach the host, fall back to handing Hugo the prefilled link
+  `https://kb.substratesystems.io/upload?scope=<scope>&category=<category>` to upload
+  from his browser.
+- **Phone / curl / a shortcut:** `POST https://kb.substratesystems.io/upload`
+  multipart (`file`, `scope`, `category`, optional `filename`, `description`) with
+  `Authorization: Bearer $KB_MCP_UPLOAD_TOKEN` (the token is **always** required;
+  Cloudflare Access may sit in front as an extra network gate but the server does
+  not trust its headers). Lands straight in `Evidence/<scope>/<category>/`, zero
+  token cost, ≤25 MB.
+- **Claude Code / desk-side:** the file is already on local disk — write it straight
+  into `Evidence/<scope>/<category>/`, or drop it via Obsidian Sync; the note links it.
+- **`preserve`** is text-only; binaries always go via the channels above. Every write
+  tool rejects inline byte blobs outright (`BINARY_BLOB_REJECTED`).
+
 ### Procedure
 1. Determine scope and category folder. Create the folder if it doesn't exist yet. Confirm new scope/category with Hugo first — don't silently invent.
 2. Generate filename if renaming: ISO date prefix where temporal anchoring matters + descriptive slug. Preserve the file's extension as-is.

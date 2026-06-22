@@ -31,7 +31,8 @@ from .vault import PlannedWrite, batch_atomic_write, escape_wikilinks_for_log, k
 
 log = logging.getLogger(__name__)
 
-MAX_DECODED_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_DECODED_BYTES = 5 * 1024 * 1024  # 5 MB — base64-via-model path (tokens cost real money)
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB — HTTP /upload path (raw bytes, no token cost)
 
 
 @dataclass
@@ -68,6 +69,7 @@ def preserve(
     content: str | None = None,
     description: str | None = None,
     today: dt.date | None = None,
+    max_decoded_bytes: int = MAX_DECODED_BYTES,
 ) -> PreserveResult:
     """Capture an artifact to Evidence/<scope>/<category>/<filename>."""
     missing: list[str] = []
@@ -121,14 +123,16 @@ def preserve(
                 ["content_base64"],
                 f"could not decode base64: {e}",
             )
-        if len(decoded) > MAX_DECODED_BYTES:
+        if len(decoded) > max_decoded_bytes:
             return _raise(
                 "TOO_LARGE",
                 ["content_base64"],
                 (
                     f"decoded size {len(decoded):,} bytes exceeds the "
-                    f"{MAX_DECODED_BYTES:,}-byte preserve limit. Land it "
-                    "desk-side via Obsidian Sync instead."
+                    f"{max_decoded_bytes:,}-byte limit. Don't push large binaries "
+                    "through the model as base64 — it's billed as output tokens. "
+                    "Use the POST /upload endpoint (out-of-band, no token cost) or "
+                    "land it desk-side via Obsidian Sync instead."
                 ),
             )
         artifact_bytes = decoded
@@ -243,6 +247,38 @@ def preserve(
         path=artifact_path.relative_to(vault_root).as_posix(),
         sidecar_path=sidecar_rel,
         warnings=warnings,
+    )
+
+
+def preserve_bytes(
+    vault_root: Path,
+    *,
+    scope: str,
+    category: str,
+    filename: str,
+    data: bytes,
+    description: str | None = None,
+    today: dt.date | None = None,
+    max_bytes: int = MAX_UPLOAD_BYTES,
+) -> PreserveResult:
+    """Capture raw bytes to Evidence/ — the entrypoint for the HTTP /upload route.
+
+    The bytes arrive out-of-band (multipart over HTTP), never through the model's
+    token stream, so the size budget is generous (`MAX_UPLOAD_BYTES`, not the
+    base64-via-model `MAX_DECODED_BYTES`). We funnel through `preserve()` so there
+    is exactly ONE write path with identical sanitization, append-only overwrite
+    refusal, sidecar, and index/log behavior. The local re-encode is server-side
+    CPU only (no tokens) and negligible relative to a 25 MB upload.
+    """
+    return preserve(
+        vault_root,
+        scope=scope,
+        category=category,
+        filename=filename,
+        content_base64=base64.b64encode(data).decode("ascii"),
+        description=description,
+        today=today,
+        max_decoded_bytes=max_bytes,
     )
 
 
