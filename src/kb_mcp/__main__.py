@@ -39,7 +39,7 @@ def _serve_main(argv: list[str]) -> int:
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="Bind address for HTTP transports (default: 127.0.0.1; fronted by Tailscale Funnel).",
+        help="Bind address for HTTP transports (default: 127.0.0.1; fronted by Cloudflare Tunnel).",
     )
     parser.add_argument(
         "--port",
