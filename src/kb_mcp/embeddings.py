@@ -165,6 +165,57 @@ def embed_clip_text(query: str) -> np.ndarray:
     return vec.astype(np.float32, copy=False)
 
 
+CLIP_VIDEO_FRAMES = 8  # evenly-sampled keyframes mean-pooled into one video vector
+
+
+def embed_video(path: Path, *, max_frames: int = CLIP_VIDEO_FRAMES) -> np.ndarray:
+    """Encode a video → one CLIP vector (mean-pooled over evenly-sampled keyframes).
+
+    A video is a sequence of images: we decode up to `max_frames` evenly-spaced frames,
+    CLIP-embed each, and mean-pool (renormalized) into a single 512-d vector — so a video
+    is findable by what it visually SHOWS, including a SILENT video that has no transcript.
+    Raises ClipUnavailable if CLIP/PyAV/Pillow are missing or no frame decodes.
+    """
+    try:
+        from PIL import Image  # noqa: F401 — frame.to_image() returns a PIL image
+    except ImportError as e:
+        raise ClipUnavailable(f"Pillow not installed: {e}") from e
+    try:
+        model = get_clip_model()
+    except ImportError as e:
+        raise ClipUnavailable(f"sentence-transformers not installed: {e}") from e
+    frames = _sample_video_frames(path, max_frames)
+    if not frames:
+        raise ClipUnavailable(f"no decodable video frames in {path.name}")
+    vecs = model.encode(frames, convert_to_numpy=True, normalize_embeddings=True)
+    pooled = vecs.mean(axis=0)
+    norm = float(np.linalg.norm(pooled))
+    pooled = pooled / norm if norm else pooled
+    return pooled.astype(np.float32, copy=False)
+
+
+def _sample_video_frames(path: Path, max_frames: int) -> list:
+    """Decode up to `max_frames` evenly-spaced frames as PIL images (PyAV)."""
+    try:
+        import av
+    except ImportError as e:
+        raise ClipUnavailable(f"PyAV not installed: {e}") from e
+    frames: list = []
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            return frames
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        total = stream.frames or 0
+        step = max(1, total // max_frames) if total else 30  # ~every 30th frame if count unknown
+        for i, frame in enumerate(container.decode(stream)):
+            if i % step == 0:
+                frames.append(frame.to_image())
+                if len(frames) >= max_frames:
+                    break
+    return frames
+
+
 def rerank_pairs(query: str, passages: list[str]) -> np.ndarray:
     """Score `(query, passage)` pairs with bge-reranker-base. Returns float32 (N,).
 
