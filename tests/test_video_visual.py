@@ -19,29 +19,13 @@ def test_transcribe_silent_video_is_not_a_failure(monkeypatch: pytest.MonkeyPatc
     assert r.text == "" and r.engine == "no-audio" and r.media_type == "video"
 
 
-def test_embed_video_mean_pools_keyframes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(embeddings, "_sample_video_frames", lambda p, n: ["f1", "f2"])
-
-    class _Model:
-        def encode(self, frames, **kw):
-            e0 = np.zeros(embeddings.CLIP_DIM, dtype=np.float32)
-            e0[0] = 1.0
-            e1 = np.zeros(embeddings.CLIP_DIM, dtype=np.float32)
-            e1[1] = 1.0
-            return np.stack([e0, e1])
-
-    monkeypatch.setattr(embeddings, "get_clip_model", lambda: _Model())
-    v = embeddings.embed_video(Path("clip.mp4"))
-    assert v.shape == (embeddings.CLIP_DIM,)
-    # mean of two orthogonal unit vectors, renormalized → 1/sqrt(2) on each axis
-    assert abs(v[0] - 0.70710) < 1e-3 and abs(v[1] - 0.70710) < 1e-3
-
-
-def test_embed_video_no_frames_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(embeddings, "_sample_video_frames", lambda p, n: [])
-    monkeypatch.setattr(embeddings, "get_clip_model", lambda: object())
-    with pytest.raises(embeddings.ClipUnavailable):
-        embeddings.embed_video(Path("clip.mp4"))
+def _three_frames():
+    """Stub embed_video_frames output: three keyframes at distinct timestamps."""
+    return [
+        (5.0, np.eye(1, embeddings.CLIP_DIM, 0, dtype=np.float32)[0]),
+        (15.0, np.eye(1, embeddings.CLIP_DIM, 1, dtype=np.float32)[0]),
+        (25.0, np.eye(1, embeddings.CLIP_DIM, 2, dtype=np.float32)[0]),
+    ]
 
 
 def test_worker_clip_embeds_video_via_keyframes(vault, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,15 +35,18 @@ def test_worker_clip_embeds_video_via_keyframes(vault, monkeypatch: pytest.Monke
         vault, scope="Yolo", category="clips", filename="demo.mp4", data=b"\x00\x00video", text="x",
     )
     called = {}
-    monkeypatch.setattr(embeddings, "embed_video", lambda p: called.setdefault("v", np.ones(embeddings.CLIP_DIM, np.float32)))
+    monkeypatch.setattr(embeddings, "embed_video_frames", lambda p: called.setdefault("v", _three_frames()))
     monkeypatch.setattr(embeddings, "embed_image", lambda p: (_ for _ in ()).throw(AssertionError("used embed_image for video")))
     w = media_worker.MediaWorker(vault)
     w._process(media_worker._Job(
         binary_path=vault / res.path, sidecar_path=vault / res.sidecar_path,
         media_type="video", do_ocr=False, do_clip=True,
     ))
-    assert "v" in called  # embed_video was used, not embed_image
-    assert embeddings.ClipIndex(vault).has(res.path)
+    assert "v" in called  # per-keyframe path was used, not embed_image
+    idx = embeddings.ClipIndex(vault)
+    assert idx.has(res.path)
+    paths, _, _ = idx.all_vectors()
+    assert paths.count(res.path) == 3  # one row per keyframe, not one mean-pool
 
 
 def test_backfill_clip_indexes_video(vault, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,7 +54,11 @@ def test_backfill_clip_indexes_video(vault, monkeypatch: pytest.MonkeyPatch) -> 
     p = vault / "Knowledge Base/Evidence/Old/clips/legacy.mp4"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"\x00video")
-    monkeypatch.setattr(embeddings, "embed_video", lambda f: np.ones(embeddings.CLIP_DIM, np.float32))
+    monkeypatch.setattr(embeddings, "embed_video_frames", lambda f: _three_frames())
     stats = backfill.backfill_media(vault, do_ocr=False, log_fn=lambda *a: None)
     assert stats.clip_indexed == 1
-    assert embeddings.ClipIndex(vault).has("Knowledge Base/Evidence/Old/clips/legacy.mp4")
+    rel = "Knowledge Base/Evidence/Old/clips/legacy.mp4"
+    idx = embeddings.ClipIndex(vault)
+    assert idx.has(rel)
+    paths, _, _ = idx.all_vectors()
+    assert paths.count(rel) == 3

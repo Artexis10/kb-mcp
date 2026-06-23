@@ -125,10 +125,12 @@ class MediaWorker:
         )
 
     def _run_clip(self, job: _Job) -> None:
-        """CLIP-embed an image (or video keyframes) so it's findable by visual content."""
+        """CLIP-embed an image (one vector) or a video (per-keyframe vectors) so it's
+        findable by visual content — video at the specific moment, not as one blur."""
+        is_video = job.media_type == "video"
         try:
-            if job.media_type == "video":
-                vec = embeddings.embed_video(job.binary_path)
+            if is_video:
+                frames = embeddings.embed_video_frames(job.binary_path)
             else:
                 vec = embeddings.embed_image(job.binary_path)
         except embeddings.ClipUnavailable as e:
@@ -143,8 +145,12 @@ class MediaWorker:
         except (ValueError, OSError) as e:
             log.warning("CLIP skip %s: %s", job.binary_path.name, e)
             return
-        self._clip_index.upsert(rel, vec, mtime)
-        log.info("CLIP-indexed %s", job.binary_path.name)
+        if is_video:
+            self._clip_index.upsert_frames(rel, frames, mtime)
+            log.info("CLIP-indexed %s (%d keyframes)", job.binary_path.name, len(frames))
+        else:
+            self._clip_index.upsert(rel, vec, mtime)
+            log.info("CLIP-indexed %s", job.binary_path.name)
 
     def scan_pending(self) -> int:
         """Restart recovery: re-enqueue pending OCR + CLIP-index un-indexed images."""

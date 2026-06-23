@@ -124,8 +124,11 @@ def backfill_media(
                 stats.extract_failed += 1
         if need_clip:
             try:
-                vec = embeddings.embed_video(f) if media_type == "video" else embeddings.embed_image(f)
-                clip_index.upsert(rel, vec, f.stat().st_mtime)
+                mtime = f.stat().st_mtime
+                if media_type == "video":
+                    clip_index.upsert_frames(rel, embeddings.embed_video_frames(f), mtime)
+                else:
+                    clip_index.upsert(rel, embeddings.embed_image(f), mtime)
                 stats.clip_indexed += 1
             except embeddings.ClipUnavailable as e:
                 log_fn(f"  ! CLIP unavailable ({e}); skipping CLIP for the rest")

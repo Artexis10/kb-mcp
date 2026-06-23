@@ -66,6 +66,46 @@ def main() -> int:
         ok = False
         print(f"faster-whisper GPU check FAILED: {e}")
 
+    # --- per-keyframe video CLIP (real sampler + real CLIP encode) ---
+    try:
+        import av
+        import numpy as np
+
+        from kb_mcp import embeddings
+
+        # Synthesize a ~24s clip with a white square that marches across the frame —
+        # SPATIAL structure (not just colour) so the luminance pHash sees distinct
+        # scenes and the sampler keeps several keyframes. (aHash is level-invariant,
+        # so a textured frame is needed; real recordings are textured.)
+        tmp_mp4 = os.path.join(tempfile.gettempdir(), "kb_gate_clip.mp4")
+        fps, secs, w_, h_, box = 10, 24, 96, 96, 24
+        with av.open(tmp_mp4, "w") as out:
+            vs = out.add_stream("mpeg4", rate=fps)
+            vs.width, vs.height, vs.pix_fmt = w_, h_, "yuv420p"
+            n = fps * secs
+            for i in range(n):
+                rgb = np.full((h_, w_, 3), 30, dtype=np.uint8)
+                x = int((w_ - box) * i / max(1, n - 1))
+                y = int((h_ - box) * (i % fps) / max(1, fps - 1))
+                rgb[y : y + box, x : x + box] = 235  # white box, moving position
+                for pkt in vs.encode(av.VideoFrame.from_ndarray(rgb, format="rgb24")):
+                    out.mux(pkt)
+            for pkt in vs.encode():
+                out.mux(pkt)
+
+        frames = embeddings.embed_video_frames(__import__("pathlib").Path(tmp_mp4))
+        assert frames, "no keyframe vectors produced"
+        assert all(v.shape == (embeddings.CLIP_DIM,) for _, v in frames), "wrong vector dim"
+        assert all(abs(float(np.linalg.norm(v)) - 1.0) < 1e-3 for _, v in frames), "vectors not L2-normalized"
+        assert all(0.0 <= ts <= secs + 1 for ts, _ in frames), "timestamp out of range"
+        print(
+            f"embed_video_frames OK — {len(frames)} keyframe vector(s), "
+            f"ts={[round(ts, 1) for ts, _ in frames]}"
+        )
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        print(f"per-keyframe video CLIP check FAILED: {e}")
+
     # --- pymupdf / pytesseract import + Tesseract binary ---
     for mod in ("fitz", "pytesseract"):
         try:
