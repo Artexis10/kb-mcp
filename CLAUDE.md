@@ -12,6 +12,15 @@ new change — feature, fix, or docs — work in a dedicated git worktree and
 commit/push from there, leaving the primary checkout on whatever branch the other
 session is using.
 
+What's forbidden is anything that *yanks files out from under another session*:
+`git checkout <branch>`, `git switch`, `git stash`, `git reset --hard`, a
+rebase/merge that rewrites the working tree. What's **fine** (do it yourself, no
+worktree needed): a fast-forward `git pull` / `git pull --ff-only` on the branch
+the checkout is *already* on (e.g. pulling `main` while on `main` after a merge) —
+it only advances, it doesn't switch or stash. Read-only git (`status`, `log`,
+`diff`, `fetch`) is always fine. So: don't make the user paste a `git pull` you
+could run — only the worktree/branch-switch operations are off-limits here.
+
 - Native (Claude Code): `EnterWorktree` — branches off `origin/main`; edit,
   commit, `git push origin HEAD:main` (or open a PR), then `ExitWorktree`.
 - Manual: `git worktree add ../kb-mcp-<topic> -b <branch>`; work, commit, push;
