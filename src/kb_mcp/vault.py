@@ -861,3 +861,51 @@ def write_log_entry(
     )
     batch_atomic_write([PlannedWrite(path=log_file, content=new_text)])
     return None
+
+
+# Matches a single log.md entry header: `## [2026-06-23] edit | Notes/Insights/foo`.
+# `op` is a single whitespace-free token; the title runs to end-of-line.
+_LOG_ENTRY_HEADER_RE = re.compile(
+    r"^## \[(\d{4}-\d{2}-\d{2})\] (\S+) \| (.+)$",
+    re.MULTILINE,
+)
+
+
+def read_log_entries(vault_root: Path, rel_path_no_ext: str) -> list[dict[str, str]]:
+    """Return the `log.md` change entries for one page, newest-first.
+
+    The inverse of `prepend_log_entry`: it parses the append-only activity log
+    and returns the `why`/rationale history for a single page so a reader can
+    verify *why* a note changed. Title matching mirrors how writers record the
+    entry (`prepend_log_entry`): a leading `Knowledge Base/` is stripped and the
+    `.md` extension dropped. Entries are stored newest-first (prepended), so file
+    order is preserved.
+
+    Missing `log.md`, or no matching entries, returns `[]` — never an error;
+    surfacing history is best-effort. Each entry is
+    ``{"date": "2026-06-23", "op": "edit", "summary": "<rationale + what changed>"}``.
+    """
+    title = rel_path_no_ext
+    if title.endswith(".md"):
+        title = title[: -len(".md")]
+    if title.startswith("Knowledge Base/"):
+        title = title[len("Knowledge Base/"):]
+
+    log_file = kb_root(vault_root) / "log.md"
+    if not log_file.exists():
+        return []
+    text = log_file.read_text(encoding="utf-8")
+
+    matches = list(_LOG_ENTRY_HEADER_RE.finditer(text))
+    entries: list[dict[str, str]] = []
+    for i, m in enumerate(matches):
+        if m.group(3).strip() != title:
+            continue
+        body_start = m.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        entries.append({
+            "date": m.group(1),
+            "op": m.group(2),
+            "summary": text[body_start:body_end].strip(),
+        })
+    return entries
