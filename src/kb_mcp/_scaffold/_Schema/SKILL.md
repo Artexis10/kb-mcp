@@ -1,7 +1,7 @@
 ---
 name: knowledge-base
 description: Operates on Hugo's personal Obsidian Knowledge Base — raw sources, compiled research notes, insights, failures, patterns, experiments, production-logs, typed entities, and Evidence artifacts. Triggers when the user wants to save, file, log, compile, distill, search, audit, supersede, or preserve anything in their KB, vault, Obsidian, or notes — including oblique phrasings ("interesting, save it," "I want to remember this"). Also engages proactively, without being told — it consults the KB for prior conclusions when a turn touches a project, domain, decision, or topic it likely covers, and captures durable conclusions when the conversation reaches a stepping-stone (agreement, decision, solved problem, diagnosed failure, or recognized pattern). Do NOT trigger for writes outside the Knowledge Base folder — Cognitive Core, Domains, Prompt Bank, Products, and Personal Context are read-only inputs.
-version: 0.26.0
+version: 0.27.0
 ---
 
 # Knowledge Base
@@ -182,6 +182,8 @@ These constraints apply equally to Tier 1 and Tier 2 ops — no escape hatch aro
 - "make these few edits to the page," "fix these N lines in one go" (same page) → **edit** (`edits=[…]`)
 - "show all conv-derived takes," "what's flagged add-to-imdb," "where did this opinion come from" → **provenance_report**
 - "what do I have on X," "find my notes on Y," "have I covered Z" → **find**
+- "why was this note changed," "show the history of this page," "what was the old version" → **get** (`include_history=true` — returns the page's `log.md` change log: date / op / why)
+- "what did I used to think about X," "show me the superseded version" → **find** (`prefer_active=false`; superseded pages are otherwise demoted + flagged with `status`/`superseded_by`)
 - "what should this link to," "what existing notes relate to this draft," "densify this page's links" → **suggest_links**
 - "what should I compile next," "drain the source backlog," "draft a note from these sources" → **propose_compilation**
 - "audit the KB," "lint the vault," "check for orphans," "clean up stale notes" → **audit**
@@ -233,6 +235,7 @@ Additional knobs on `find`:
 - **`graph=true`** (default for hybrid/vector) — outbound wikilinks of top BM25/vector hits contribute a third RRF ranking, surfacing 1-hop neighbours of strong matches even when they share no query tokens. Graph seeds are gated to "strong" matches only (vector hits or BM25 hits passing the stem-aware all-tokens check), so noisy queries don't flood results with neighbours of weak matches.
 - **`rerank=true`** (off by default, opt-in due to model load) — runs the top fused candidates through `BAAI/bge-reranker-base` (a CrossEncoder) and re-sorts by reranker score. ~50ms/candidate on Blackwell. Useful when ambiguous queries float topically-off vector matches; for everyday hybrid queries the default fusion already handles this.
 - **`prefer_compiled=true`** (default) — applies a small post-fusion multiplier (×1.15) to compiled types (`insight`, `pattern`, `failure`, `research-note`, `entity`) and a small penalty (×0.85) to raw `source`. Reflects the KB's epistemic hierarchy: compiled distillations are the intentional output, sources are inputs. Also re-applied to `rerank_score` so the preference survives reranking. Set false to retrieve raw source discussion verbatim ("what did I capture from Dr. X").
+- **`prefer_active=true`** (default) — soft-demotes `status: superseded` pages (×0.5) so a replaced conclusion can't outrank the page that superseded it, and surfaces `status` + `superseded_by` (the forward pointer to the replacement) on any hit that isn't plain `active`. Never excludes — the tombstone stays findable. Set false to rank a superseded page on its content alone ("what did I used to think about X").
 
 **Stemming**: BM25's corpus and the BM25-only stem-aware gate both use Snowball English stems — `regulation` reaches a page that uses `regulator`, `compounding` reaches one that uses `compound`. Keyword mode stays strict-substring (the precision is the feature there).
 
