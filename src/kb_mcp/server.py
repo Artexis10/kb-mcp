@@ -71,6 +71,7 @@ from . import schema
 from . import set_frontmatter_field as set_frontmatter_field_module
 from . import set_take as set_take_module
 from . import upload_tokens
+from . import vault
 from .vault import (
     VaultPathError,
     find_body_wikilinks,
@@ -645,6 +646,7 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
         graph: bool = True,
         rerank: bool = False,
         prefer_compiled: bool = True,
+        prefer_active: bool = True,
     ) -> list[dict]:
         """Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within.
 
@@ -699,12 +701,22 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
                 AND rerank. Reflects the KB's epistemic hierarchy. Set
                 false to retrieve raw source discussion verbatim (e.g.
                 "what did I capture from Dr. X").
+            prefer_active: When true (default), soft-demotes `status:
+                superseded` pages so a replaced conclusion can't outrank the
+                page that superseded it. The tombstone stays findable and its
+                hit still carries `status` + `superseded_by` (the forward
+                pointer) so you can see it's superseded. Set false to rank a
+                superseded page on its content alone (e.g. "what did I used to
+                think about X").
 
         Returns:
             List of {path, type, scope, title, updated, excerpt[, outside_kb]
-            [, signals]}. `outside_kb: true` is present only on hits the
-            "kb" auto-widen pulled from beyond Knowledge Base/ (the `path`
-            also shows the sibling folder).
+            [, status][, superseded_by][, signals]}. `outside_kb: true` is
+            present only on hits the "kb" auto-widen pulled from beyond
+            Knowledge Base/ (the `path` also shows the sibling folder).
+            `status` + `superseded_by` appear only when a hit is NOT plain
+            `active` — i.e. a superseded tombstone (or draft) — so you can tell
+            it from a live conclusion and follow `superseded_by` to the replacement.
             In hybrid mode `excerpt` shows the best-matching chunk; in
             keyword mode it's a snippet anchored to the literal query
             match. `signals` (hybrid/vector only) carries per-ranker
@@ -726,6 +738,7 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             graph=graph,
             rerank=rerank,
             prefer_compiled=prefer_compiled,
+            prefer_active=prefer_active,
         )
         # Durable structured log → feeds the offline retrieval feedback loop.
         # Best-effort; never affects the returned result.
@@ -1208,7 +1221,9 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             raise ValueError(f"{e.code}: {e.reason}") from e
 
     @mcp.tool
-    def get(path: str, frontmatter_only: bool = False) -> dict:
+    def get(
+        path: str, frontmatter_only: bool = False, include_history: bool = False
+    ) -> dict:
         """Read / open / fetch / load the full contents of a KB or vault page by path. Returns frontmatter + body + raw content.
 
         Reads anywhere under the vault root — not just `Knowledge Base/`.
@@ -1230,6 +1245,13 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
                 cheap for scanning many files by field (folds in the former
                 `get_frontmatter` tool). Returns {path, frontmatter,
                 has_frontmatter} instead of the full page below.
+            include_history: If true, attach a `history` list — the page's
+                change log from the append-only `log.md`, newest-first
+                (`[{date, op, summary}]`, where `summary` is the `why:`
+                rationale recorded at write time). Use this to answer "why was
+                this note changed / what was the old version / show its history"
+                and to verify an edit's rationale. `[]` when the page has no
+                recorded edits.
 
         Returns:
             {path, frontmatter, body, content, content_hash, mtime}.
@@ -1238,6 +1260,7 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             is a sha256 you can echo back to `edit`/`multi_edit` via
             `expected_hash` to refuse a write if the file changed on disk since
             this read (two-writer drift guard); `mtime` is advisory.
+            Adds `history` when `include_history=true`.
 
         Errors:
             INVALID_PATH (path escapes vault root or empty);
@@ -1245,17 +1268,21 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
         """
         if frontmatter_only:
             try:
-                result = get_frontmatter_module.get_frontmatter(
+                fm_result = get_frontmatter_module.get_frontmatter(
                     vault_root, path=path
                 )
             except get_frontmatter_module.GetFrontmatterError as e:
                 raise ValueError(f"{e.code}: {e.reason}") from e
-            return result.as_dict()
-        try:
-            result = get_page_module.get_page(vault_root, path=path)
-        except get_page_module.GetError as e:
-            raise ValueError(f"{e.code}: {e.reason}") from e
-        return result.as_dict()
+            out = fm_result.as_dict()
+        else:
+            try:
+                result = get_page_module.get_page(vault_root, path=path)
+            except get_page_module.GetError as e:
+                raise ValueError(f"{e.code}: {e.reason}") from e
+            out = result.as_dict()
+        if include_history:
+            out["history"] = vault.read_log_entries(vault_root, out["path"])
+        return out
 
     @mcp.tool
     def edit(

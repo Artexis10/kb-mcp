@@ -23,6 +23,7 @@ def test_default_config_matches_legacy_constants() -> None:
     # canonical source values; this binds them together.
     assert cfg.compiled_boost == find_module._COMPILED_BOOST
     assert cfg.source_penalty == find_module._SOURCE_PENALTY
+    assert cfg.superseded_penalty == find_module._SUPERSEDED_PENALTY
     assert cfg.rrf_k == 60
     assert cfg.candidate_multiplier == 5
     assert cfg.candidate_floor == 50

@@ -51,6 +51,7 @@ class RankingConfig:
     rrf_k: int = 60  # Cormack/Clarke/Buettcher 2009 default; fusion.py
     compiled_boost: float = 1.15  # must equal _COMPILED_BOOST
     source_penalty: float = 0.85  # must equal _SOURCE_PENALTY
+    superseded_penalty: float = 0.5  # must equal _SUPERSEDED_PENALTY
     candidate_multiplier: int = 5  # candidate_k = max(limit*mult, floor)
     candidate_floor: int = 50
     graph_seed_cap: int = 20  # per-ranker fanout cap for 1-hop expansion
@@ -138,6 +139,20 @@ class ParsedPage:
         ef = self.frontmatter.get("evidence_file")
         return str(ef) if ef else None
 
+    @property
+    def status(self) -> str | None:
+        """Lifecycle status — draft / active / superseded / archived (None if unset)."""
+        s = self.frontmatter.get("status")
+        return str(s) if s else None
+
+    @property
+    def superseded_by(self) -> list[str]:
+        """Wikilink(s) to the page(s) that replaced this one (empty when not superseded)."""
+        sb = self.frontmatter.get("superseded_by")
+        if not sb:
+            return []
+        return [str(x) for x in sb] if isinstance(sb, list) else [str(sb)]
+
 
 def _format_timestamp(seconds: float) -> str:
     """Seconds → `mm:ss` (or `h:mm:ss` past an hour) for human-readable video deeplinks."""
@@ -185,6 +200,13 @@ class Hit:
     # on video visual hits (multi-vector index); None for images. Surfaced as a
     # human-readable `clip_match_at` ("14:32") so the caller can deep-link the moment.
     clip_frame_ts: float | None = None
+    # Lifecycle. `status` is set when a hit is NOT plain `active`, so a reader can
+    # tell a superseded tombstone (or draft) from a live conclusion; `superseded_by`
+    # carries the forward pointer(s) to the replacement(s). Surfaced in as_dict()
+    # regardless of `prefer_active` — exposure is independent of the ranking
+    # demotion. Omitted when status is active/unset so live hits stay noise-free.
+    status: str | None = None
+    superseded_by: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         out: dict = {
@@ -203,6 +225,10 @@ class Hit:
             out["clip_match_at"] = _format_timestamp(self.clip_frame_ts)
         if self.outside_kb:
             out["outside_kb"] = True
+        if self.status and self.status != "active":
+            out["status"] = self.status
+        if self.superseded_by:
+            out["superseded_by"] = self.superseded_by
         signals: dict = {}
         if self.bm25_rank is not None:
             signals["bm25_rank"] = self.bm25_rank
@@ -266,6 +292,7 @@ def find(
     graph: bool = True,
     rerank: bool = False,
     prefer_compiled: bool = True,
+    prefer_active: bool = True,
     config: RankingConfig | None = None,
 ) -> list[Hit]:
     """Search the vault. Returns up to `limit` hits.
@@ -308,6 +335,13 @@ def find(
     pages. Reflects the KB's epistemic hierarchy — compiled distillations
     are the intentional output, sources are inputs. Set False to retrieve
     raw source discussion verbatim (e.g. "what did I capture from Dr. X").
+
+    `prefer_active`: when True (default), soft-demotes `status: superseded`
+    pages so a replaced conclusion can't outrank the page that superseded it.
+    The tombstone stays findable (never excluded) and its hit carries `status`
+    + `superseded_by` either way, so the reader sees it's superseded and where
+    it points. Set False to rank superseded pages on their content alone (e.g.
+    "what did I used to think about X").
     """
     if scope not in ("kb", "vault", "kb-only"):
         raise ValueError(
@@ -344,6 +378,7 @@ def find(
             types=types, projects=projects, tags=tags,
             limit=limit, scope=walk_scope, mode=mode, graph=graph, rerank=rerank,
             prefer_compiled=prefer_compiled,
+            prefer_active=prefer_active,
             config=config or DEFAULT_RANKING,
         )
 
@@ -436,6 +471,8 @@ def _find_keyword(
                     excerpt=excerpt or "",
                     media_type=page.media_type,
                     media_file=page.media_file,
+                    status=page.status,
+                    superseded_by=page.superseded_by,
                 ),
             )
         )
@@ -458,6 +495,7 @@ def _find_semantic(
     graph: bool = True,
     rerank: bool = False,
     prefer_compiled: bool = True,
+    prefer_active: bool = True,
     config: RankingConfig = DEFAULT_RANKING,
 ) -> list[Hit]:
     """Hybrid (BM25+vector) or vector-only mode."""
@@ -621,6 +659,8 @@ def _find_semantic(
     # applied to rerank_score below so it survives the final sort.
     if prefer_compiled:
         fused = _apply_type_boost(fused, vault_root, config)
+    if prefer_active:
+        fused = _apply_status_demotion(fused, vault_root, config)
     vector_paths: set[str] = set(vector_ranking)
 
     # Resolve fused paths back to ParsedPage, filter, build hits in fused order.
@@ -681,6 +721,8 @@ def _find_semantic(
             excerpt=excerpt or "",
             media_type=page.media_type,
             media_file=page.media_file,
+            status=page.status,
+            superseded_by=page.superseded_by,
             bm25_rank=bm25_rank_by_path.get(rel_path),
             vector_rank=vector_rank_by_path.get(rel_path),
             vector_score=vector_score_by_path.get(rel_path),
@@ -721,6 +763,13 @@ def _find_semantic(
                 for h in hits:
                     if h.rerank_score is not None:
                         h.rerank_score *= _type_multiplier(h.type, config)
+            # Re-apply the supersession demotion to rerank scores too, so a
+            # superseded tombstone the reranker liked can't float back above
+            # its successor in the final sort.
+            if prefer_active:
+                for h in hits:
+                    if h.rerank_score is not None:
+                        h.rerank_score *= _status_multiplier(h.status, config)
             hits.sort(key=lambda h: -(h.rerank_score if h.rerank_score is not None else float("-inf")))
         except ImportError as e:
             log.warning("rerank requested but reranker unavailable: %s", e)
@@ -799,6 +848,8 @@ def _find_outside_kb(
             excerpt=excerpt or "",
             media_type=page.media_type,
             media_file=page.media_file,
+            status=page.status,
+            superseded_by=page.superseded_by,
             outside_kb=True,
         ))
         if len(hits) >= limit:
@@ -859,6 +910,11 @@ _COMPILED_TYPES = frozenset(
 _SOURCE_TYPES = frozenset({"source"})
 _COMPILED_BOOST = 1.15
 _SOURCE_PENALTY = 0.85
+# Supersession demotion: a `status: superseded` page stays in place per the
+# supersession protocol (it is NOT moved), so without this it competes head-to-head
+# with — and can outrank — the very page that replaced it. Soft-demote, never
+# exclude: the tombstone must stay findable for "what did I used to think".
+_SUPERSEDED_PENALTY = 0.5
 
 
 def _type_multiplier(
@@ -868,6 +924,19 @@ def _type_multiplier(
         return config.compiled_boost
     if page_type in _SOURCE_TYPES:
         return config.source_penalty
+    return 1.0
+
+
+def _status_multiplier(
+    status: str | None, config: RankingConfig = DEFAULT_RANKING
+) -> float:
+    """Demote `superseded` tombstones; everything else is neutral.
+
+    `archived` pages live in `_archive/` (already dir-excluded), so only
+    `superseded` needs handling here. `active`/`draft`/unset → 1.0.
+    """
+    if status == "superseded":
+        return config.superseded_penalty
     return 1.0
 
 
@@ -890,6 +959,25 @@ def _apply_type_boost(
             mult = 1.0
         else:
             mult = _type_multiplier(page.page_type if page else None, config)
+        adjusted.append((path, score * mult))
+    adjusted.sort(key=lambda t: (-t[1], t[0]))
+    return adjusted
+
+
+def _apply_status_demotion(
+    fused: list[tuple[str, float]],
+    vault_root: Path,
+    config: RankingConfig = DEFAULT_RANKING,
+) -> list[tuple[str, float]]:
+    """Re-sort fused `(path, score)` pairs after demoting superseded pages.
+
+    Mirrors `_apply_type_boost` but gated by `prefer_active` independently of
+    `prefer_compiled`. Pages that can't be loaded keep their original score.
+    """
+    adjusted: list[tuple[str, float]] = []
+    for path, score in fused:
+        page = _CACHE.get(vault_root / path, vault_root)
+        mult = _status_multiplier(page.status if page else None, config)
         adjusted.append((path, score * mult))
     adjusted.sort(key=lambda t: (-t[1], t[0]))
     return adjusted
