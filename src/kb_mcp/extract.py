@@ -163,7 +163,7 @@ def _get_whisper():
 def _transcribe(path: Path, media_type: str) -> ExtractResult:
     # A silent video (no audio stream) can't be transcribed — that's NOT a failure.
     # Return an empty transcript cleanly; its visual content is still searchable via
-    # CLIP keyframes (embeddings.embed_video). A video IS a sequence of images.
+    # per-keyframe CLIP (embeddings.embed_video_frames). A video IS a sequence of images.
     if media_type == "video" and not _has_audio_stream(path):
         return ExtractResult(text="", media_type=media_type, engine="no-audio")
     model = _get_whisper()

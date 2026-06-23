@@ -139,6 +139,14 @@ class ParsedPage:
         return str(ef) if ef else None
 
 
+def _format_timestamp(seconds: float) -> str:
+    """Seconds → `mm:ss` (or `h:mm:ss` past an hour) for human-readable video deeplinks."""
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 @dataclass
 class Hit:
     path: str
@@ -173,6 +181,10 @@ class Hit:
     # with the matched transcript/OCR text as the "why". Omitted when absent.
     media_type: str | None = None
     media_file: str | None = None
+    # Seconds into a video where its best CLIP keyframe matched the query. Set only
+    # on video visual hits (multi-vector index); None for images. Surfaced as a
+    # human-readable `clip_match_at` ("14:32") so the caller can deep-link the moment.
+    clip_frame_ts: float | None = None
 
     def as_dict(self) -> dict:
         out: dict = {
@@ -187,6 +199,8 @@ class Hit:
             out["media_type"] = self.media_type
         if self.media_file:
             out["media_file"] = self.media_file
+        if self.clip_frame_ts is not None:
+            out["clip_match_at"] = _format_timestamp(self.clip_frame_ts)
         if self.outside_kb:
             out["outside_kb"] = True
         signals: dict = {}
@@ -200,6 +214,8 @@ class Hit:
             signals["clip_rank"] = self.clip_rank
         if self.clip_score is not None:
             signals["clip_score"] = round(self.clip_score, 4)
+        if self.clip_frame_ts is not None:
+            signals["clip_frame_ts"] = round(self.clip_frame_ts, 2)
         if self.graph_hop:
             signals["graph_hop"] = True
         if self.graph_in_degree:
@@ -484,15 +500,23 @@ def _find_semantic(
     # isn't installed or the index is empty. Gated by KB_MCP_DISABLE_CLIP.
     clip_ranking: list[str] = []
     clip_score_by_path: dict[str, float] = {}
+    clip_frame_ts_by_path: dict[str, float | None] = {}
     if embeddings.clip_enabled() and query.strip():
         try:
             clip_idx = embeddings.ClipIndex(vault_root)
             clip_qvec = embeddings.embed_clip_text(query)
-            for img_rel, score in clip_idx.search(clip_qvec, k=candidate_k):
+            # A video contributes N keyframe rows; over-fetch so distinct videos
+            # aren't crowded out, then dedup to best-per-file (rows are score-desc,
+            # so the FIRST time a sidecar appears is its best frame). Stop at candidate_k
+            # distinct sidecars; record that best frame's timestamp (None for images).
+            for img_rel, frame_ts, score in clip_idx.search(clip_qvec, k=candidate_k * 8):
+                if len(clip_ranking) >= candidate_k:
+                    break
                 sidecar_rel = img_rel + ".md"
                 if sidecar_rel not in clip_score_by_path and (vault_root / sidecar_rel).exists():
                     clip_ranking.append(sidecar_rel)
                     clip_score_by_path[sidecar_rel] = score
+                    clip_frame_ts_by_path[sidecar_rel] = frame_ts
         except embeddings.ClipUnavailable as e:
             log.warning("CLIP search unavailable (%s); skipping image search", e)
         except Exception as e:  # noqa: BLE001 — image search is best-effort
@@ -662,6 +686,7 @@ def _find_semantic(
             vector_score=vector_score_by_path.get(rel_path),
             clip_rank=clip_rank_by_path.get(rel_path),
             clip_score=clip_score_by_path.get(rel_path),
+            clip_frame_ts=clip_frame_ts_by_path.get(rel_path),
             graph_hop=is_graph_only,
             graph_in_degree=graph_in_degree_by_path.get(rel_path, 0),
             keyword_rank=keyword_rank_by_path.get(rel_path),

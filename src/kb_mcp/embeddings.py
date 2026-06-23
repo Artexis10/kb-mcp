@@ -16,6 +16,7 @@ Sidecar lives outside `_Schema/` deliberately:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -165,48 +166,68 @@ def embed_clip_text(query: str) -> np.ndarray:
     return vec.astype(np.float32, copy=False)
 
 
-CLIP_VIDEO_FRAMES = 8  # evenly-sampled keyframes mean-pooled into one video vector
+CLIP_VIDEO_FRAMES = 8  # frame budget for the unknown-duration sequential fallback
 
 
-def embed_video(path: Path, *, max_frames: int = CLIP_VIDEO_FRAMES) -> np.ndarray:
-    """Encode a video → one CLIP vector (mean-pooled over evenly-sampled keyframes).
+# --- Per-keyframe multi-vector video sampling -------------------------------
+# One mean-pooled vector blurs a long/multi-scene video. Instead we keep N
+# per-keyframe vectors so a video is findable at the SPECIFIC moment. The
+# sampler is duration-scaled seek-sampling (O(1) in length, no full decode) +
+# perceptual-hash near-dup suppression (collapses static talking-head runs),
+# capped to bound storage. No new dependency — PIL + numpy only.
+MAX_VIDEO_KEYFRAMES = 40  # hard cap on vectors per video (KB_MCP_MAX_VIDEO_KEYFRAMES overrides)
+MIN_VIDEO_KEYFRAMES = 4
+VIDEO_CANDIDATE_INTERVAL_SECS = 8  # ≈ one candidate keyframe per this many seconds
+PHASH_DEDUP_DISTANCE = 5  # Hamming distance under which two frames count as near-dups
 
-    A video is a sequence of images: we decode up to `max_frames` evenly-spaced frames,
-    CLIP-embed each, and mean-pool (renormalized) into a single 512-d vector — so a video
-    is findable by what it visually SHOWS, including a SILENT video that has no transcript.
-    Raises ClipUnavailable if CLIP/PyAV/Pillow are missing or no frame decodes.
+
+def _max_video_keyframes() -> int:
+    raw = os.environ.get("KB_MCP_MAX_VIDEO_KEYFRAMES")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return MAX_VIDEO_KEYFRAMES
+
+
+def _avg_hash(img, *, size: int = 8) -> int:
+    """64-bit perceptual average-hash: downscale → grayscale → bit per pixel vs mean.
+
+    Keys on luminance *structure*, so it distinguishes textured frames (faces, slides,
+    whiteboards — what real recordings contain) but is blind to two flat frames of
+    differing uniform colour (both hash to all-ones). Dedup is best-effort; a
+    pathologically flat video simply keeps fewer keyframes.
     """
-    try:
-        from PIL import Image  # noqa: F401 — frame.to_image() returns a PIL image
-    except ImportError as e:
-        raise ClipUnavailable(f"Pillow not installed: {e}") from e
-    try:
-        model = get_clip_model()
-    except ImportError as e:
-        raise ClipUnavailable(f"sentence-transformers not installed: {e}") from e
-    frames = _sample_video_frames(path, max_frames)
-    if not frames:
-        raise ClipUnavailable(f"no decodable video frames in {path.name}")
-    vecs = model.encode(frames, convert_to_numpy=True, normalize_embeddings=True)
-    pooled = vecs.mean(axis=0)
-    norm = float(np.linalg.norm(pooled))
-    pooled = pooled / norm if norm else pooled
-    return pooled.astype(np.float32, copy=False)
+    small = img.convert("L").resize((size, size))
+    arr = np.asarray(small, dtype=np.float32).ravel()
+    bits = arr >= arr.mean()
+    val = 0
+    for b in bits:
+        val = (val << 1) | int(b)
+    return val
 
 
-def _sample_video_frames(path: Path, max_frames: int) -> list:
-    """Sample `max_frames` evenly-spaced frames as PIL images, SEEKING to each timestamp.
+def _hamming(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
 
-    Seeking decodes only ~`max_frames` frames total (O(1) in video length) instead of
-    decoding the whole stream to reach evenly-spaced positions — so a 1-hour video costs
-    the same as a 10-second one. Falls back to first-N sequential decode if the duration is
-    unknown or seeks fail.
+
+def _sample_video_keyframes(path: Path) -> list[tuple[float, object]]:
+    """Seek-sample duration-scaled candidate keyframes → `(timestamp_seconds, PIL image)`.
+
+    Candidate count scales with duration (≈ one per `VIDEO_CANDIDATE_INTERVAL_SECS`),
+    clamped to `[MIN_VIDEO_KEYFRAMES, 2×cap]` so a fast-cut video has headroom for the
+    pHash dedup to keep distinct scenes. Seeks to each timestamp (O(1) in length);
+    falls back to first-N sequential decode when the duration is unknown.
     """
     try:
         import av
     except ImportError as e:
         raise ClipUnavailable(f"PyAV not installed: {e}") from e
-    frames: list = []
+    cap = _max_video_keyframes()
+    frames: list[tuple[float, object]] = []
     with av.open(str(path)) as container:
         if not container.streams.video:
             return frames
@@ -218,20 +239,75 @@ def _sample_video_frames(path: Path, max_frames: int) -> list:
         elif container.duration:
             total_secs = container.duration / av.time_base
         if total_secs > 0 and stream.time_base:
-            for k in range(max_frames):
-                t = total_secs * (k + 0.5) / max_frames  # evenly-spaced midpoints
+            n = max(MIN_VIDEO_KEYFRAMES,
+                    min(math.ceil(total_secs / VIDEO_CANDIDATE_INTERVAL_SECS), 2 * cap))
+            for k in range(n):
+                t = total_secs * (k + 0.5) / n  # evenly-spaced midpoints
                 try:
                     container.seek(int(t / float(stream.time_base)), stream=stream, backward=True)
-                    frames.append(next(container.decode(stream)).to_image())
+                    frames.append((t, next(container.decode(stream)).to_image()))
                 except Exception:  # noqa: BLE001 — best-effort sample; skip a bad seek
                     continue
         if not frames:  # unknown duration or all seeks failed → first-N sequential
             container.seek(0)
-            for frame in container.decode(stream):
-                frames.append(frame.to_image())
-                if len(frames) >= max_frames:
+            fallback = max(MIN_VIDEO_KEYFRAMES, min(CLIP_VIDEO_FRAMES, cap))
+            for i, frame in enumerate(container.decode(stream)):
+                ts = float(frame.time) if frame.time is not None else float(i)
+                frames.append((ts, frame.to_image()))
+                if len(frames) >= fallback:
                     break
     return frames
+
+
+def _dedup_keyframes(
+    frames: list[tuple[float, object]], *, distance: int = PHASH_DEDUP_DISTANCE
+) -> list[tuple[float, object]]:
+    """Drop frames whose average-hash is within `distance` of the last KEPT frame —
+    collapses static runs while keeping scene changes. Soft: returns input on any error."""
+    if len(frames) <= 1:
+        return frames
+    try:
+        kept = [frames[0]]
+        last_hash = _avg_hash(frames[0][1])
+        for ts, img in frames[1:]:
+            h = _avg_hash(img)
+            if _hamming(h, last_hash) <= distance:
+                continue
+            kept.append((ts, img))
+            last_hash = h
+        return kept
+    except Exception:  # noqa: BLE001 — dedup is a best-effort optimisation
+        return frames
+
+
+def embed_video_frames(path: Path) -> list[tuple[float, np.ndarray]]:
+    """Encode a video → `[(timestamp_seconds, CLIP vector)]`, one per keyframe.
+
+    Multi-vector replacement for `embed_video`'s single mean-pooled vector: scene-aware
+    (duration-scaled seek-sampling + perceptual-hash near-dup suppression, capped at
+    `MAX_VIDEO_KEYFRAMES`) so a long/multi-scene video is findable at the SPECIFIC moment.
+    Each vector is 512-d, L2-normalized. Raises ClipUnavailable if CLIP/PyAV/Pillow are
+    missing or no frame decodes.
+    """
+    try:
+        from PIL import Image  # noqa: F401 — frame.to_image() returns a PIL image
+    except ImportError as e:
+        raise ClipUnavailable(f"Pillow not installed: {e}") from e
+    try:
+        model = get_clip_model()
+    except ImportError as e:
+        raise ClipUnavailable(f"sentence-transformers not installed: {e}") from e
+    candidates = _sample_video_keyframes(path)
+    if not candidates:
+        raise ClipUnavailable(f"no decodable video frames in {path.name}")
+    kept = _dedup_keyframes(candidates)
+    cap = _max_video_keyframes()
+    if len(kept) > cap:  # uniform subsample preserving time order
+        idx = sorted(set(np.linspace(0, len(kept) - 1, cap).round().astype(int).tolist()))
+        kept = [kept[i] for i in idx]
+    images = [img for _, img in kept]
+    vecs = model.encode(images, convert_to_numpy=True, normalize_embeddings=True)
+    return [(float(ts), vecs[i].astype(np.float32, copy=False)) for i, (ts, _) in enumerate(kept)]
 
 
 def rerank_pairs(query: str, passages: list[str]) -> np.ndarray:
@@ -477,29 +553,106 @@ class ClipIndex:
     def __init__(self, vault_root: Path):
         self.vault_root = vault_root
         self.path = clip_sidecar_path(vault_root)
-        self._cache: tuple[float, list[str], np.ndarray] | None = None
+        # (sidecar_mtime, file_paths, frame_ts_list, matrix) — frame_ts is None for images.
+        self._cache: tuple[float, list[str], list[float | None], np.ndarray] | None = None
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
+        # Multi-vector schema: one row per image (frame_ts NULL) OR one row per
+        # video keyframe (frame_ts = seconds). Composite PK keys frames within a
+        # file. NOTE: SQLite treats NULL as DISTINCT in a PRIMARY KEY/UNIQUE index,
+        # so two image rows (same file_path, NULL frame_ts) do NOT collide — every
+        # write path below uses delete-then-insert rather than INSERT OR REPLACE.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS images (
-                file_path TEXT PRIMARY KEY,
-                vector BLOB NOT NULL,
-                file_mtime REAL NOT NULL
+                file_path  TEXT NOT NULL,
+                frame_ts   REAL,
+                vector     BLOB NOT NULL,
+                file_mtime REAL NOT NULL,
+                PRIMARY KEY (file_path, frame_ts)
             )
             """
         )
+        self._migrate_add_frame_ts(conn)
         return conn
 
+    @staticmethod
+    def _migrate_add_frame_ts(conn: sqlite3.Connection) -> None:
+        """Upgrade a pre-existing single-vector `images` table in place.
+
+        Old schema: `images(file_path PK, vector, file_mtime)` — no `frame_ts`.
+        SQLite can't ALTER a PRIMARY KEY, so rebuild the table preserving rows
+        (existing image vectors are worth keeping): old rows become image rows
+        (`frame_ts` NULL). Idempotent — no-op once `frame_ts` exists. The CREATE
+        above already made the new table when the sidecar is fresh; this only
+        fires when an OLD table is present.
+        """
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(images)").fetchall()]
+        if "frame_ts" in cols:
+            return
+        with conn:
+            conn.execute(
+                """
+                CREATE TABLE images_new (
+                    file_path  TEXT NOT NULL,
+                    frame_ts   REAL,
+                    vector     BLOB NOT NULL,
+                    file_mtime REAL NOT NULL,
+                    PRIMARY KEY (file_path, frame_ts)
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO images_new (file_path, frame_ts, vector, file_mtime) "
+                "SELECT file_path, NULL, vector, file_mtime FROM images"
+            )
+            conn.execute("DROP TABLE images")
+            conn.execute("ALTER TABLE images_new RENAME TO images")
+        log.info("ClipIndex: migrated images table to multi-vector schema (frame_ts)")
+
     def upsert(self, rel_path: str, vector: np.ndarray, mtime: float) -> None:
+        """Store one image vector (frame_ts NULL). Delete-then-insert: NULL is
+        DISTINCT in the PK, so INSERT OR REPLACE would duplicate the row."""
         conn = self._connect()
         try:
             with conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO images (file_path, vector, file_mtime) VALUES (?, ?, ?)",
+                    "DELETE FROM images WHERE file_path = ? AND frame_ts IS NULL",
+                    (rel_path,),
+                )
+                conn.execute(
+                    "INSERT INTO images (file_path, frame_ts, vector, file_mtime) "
+                    "VALUES (?, NULL, ?, ?)",
                     (rel_path, vector.astype(np.float32).tobytes(), mtime),
+                )
+        finally:
+            conn.close()
+        self._cache = None
+
+    def upsert_frames(
+        self, rel_path: str, frames: list[tuple[float, np.ndarray]], mtime: float
+    ) -> None:
+        """Replace all vectors for a video with N per-keyframe rows in one txn.
+
+        Clears any prior rows for `rel_path` first — including a stale mean-pooled
+        NULL-ts row from the old single-vector path — then inserts one row per
+        `(timestamp_seconds, vector)`. No-op on an empty frame list (caller soft-skips).
+        """
+        if not frames:
+            return
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("DELETE FROM images WHERE file_path = ?", (rel_path,))
+                conn.executemany(
+                    "INSERT INTO images (file_path, frame_ts, vector, file_mtime) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (rel_path, float(ts), vec.astype(np.float32).tobytes(), mtime)
+                        for ts, vec in frames
+                    ],
                 )
         finally:
             conn.close()
@@ -527,31 +680,37 @@ class ClipIndex:
             conn.close()
         return row is not None
 
-    def all_vectors(self) -> tuple[list[str], np.ndarray]:
+    def all_vectors(self) -> tuple[list[str], list[float | None], np.ndarray]:
+        """Returns parallel `(file_paths, frame_ts_list, matrix)`. frame_ts is None
+        for image rows, a float (seconds) for video keyframe rows."""
         try:
             sidecar_mtime = self.path.stat().st_mtime
         except FileNotFoundError:
-            return [], np.zeros((0, CLIP_DIM), dtype=np.float32)
+            return [], [], np.zeros((0, CLIP_DIM), dtype=np.float32)
         if self._cache and self._cache[0] == sidecar_mtime:
-            return self._cache[1], self._cache[2]
+            return self._cache[1], self._cache[2], self._cache[3]
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT file_path, vector FROM images ORDER BY file_path"
+                "SELECT file_path, frame_ts, vector FROM images ORDER BY file_path, frame_ts"
             ).fetchall()
         finally:
             conn.close()
         if not rows:
-            self._cache = (sidecar_mtime, [], np.zeros((0, CLIP_DIM), dtype=np.float32))
-            return self._cache[1], self._cache[2]
+            self._cache = (sidecar_mtime, [], [], np.zeros((0, CLIP_DIM), dtype=np.float32))
+            return self._cache[1], self._cache[2], self._cache[3]
         paths = [r[0] for r in rows]
-        matrix = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows], axis=0)
-        self._cache = (sidecar_mtime, paths, matrix)
-        return paths, matrix
+        frame_ts = [r[1] for r in rows]
+        matrix = np.stack([np.frombuffer(r[2], dtype=np.float32) for r in rows], axis=0)
+        self._cache = (sidecar_mtime, paths, frame_ts, matrix)
+        return paths, frame_ts, matrix
 
-    def search(self, query_vec: np.ndarray, k: int) -> list[tuple[str, float]]:
-        """Top-k image hits: list of `(file_path, score)` by cosine similarity."""
-        paths, matrix = self.all_vectors()
+    def search(self, query_vec: np.ndarray, k: int) -> list[tuple[str, float | None, float]]:
+        """Top-k visual hits: `(file_path, frame_ts, score)` by cosine similarity,
+        sorted by score desc. `frame_ts` is None for images, seconds for video frames.
+        Returns one row per stored vector — a multi-keyframe video yields several rows;
+        callers dedup to best-per-file as needed."""
+        paths, frame_ts, matrix = self.all_vectors()
         if not paths:
             return []
         scores = matrix @ query_vec.astype(np.float32, copy=False)
@@ -560,7 +719,7 @@ class ClipIndex:
             return []
         top_idx = np.argpartition(-scores, k_eff - 1)[:k_eff]
         top_idx = top_idx[np.argsort(-scores[top_idx])]
-        return [(paths[i], float(scores[i])) for i in top_idx]
+        return [(paths[i], frame_ts[i], float(scores[i])) for i in top_idx]
 
 
 def upsert_after_write(vault_root: Path, written_paths: list[Path]) -> None:
