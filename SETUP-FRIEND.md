@@ -213,18 +213,17 @@ sync the index counts after your manual `index.md` edit.
 
 ## Optional: mobile / claude.ai-web access
 
-Want the on-the-go experience Hugo has — querying your KB from **Claude
-mobile**? Same engine, just the remote tier. It's not *hard*, but it's
-genuinely more than the local path, because a phone needs an always-on,
-publicly-reachable, authenticated endpoint:
+Want the on-the-go experience Hugo has — querying your KB from **Claude mobile**
+or **claude.ai web**? Same engine, just the remote tier. It's more than the local
+path, because a public client needs an always-on, publicly-reachable,
+authenticated endpoint:
 
 1. **An always-on host** — your desktop running 24/7, or a cheap VPS. (Local
    stdio dies when you close Claude Code; mobile needs it always up.)
-2. **A public HTTPS endpoint** — **Tailscale Funnel** (no domain needed — gives a
-   free `*.ts.net` host; the simplest path if you don't own a domain) or
-   **Cloudflare Tunnel** (needs a domain you own in Cloudflare; more burst-tolerant
-   under heavy use — Hugo's setup). This exposes the server to the internet, so auth
-   becomes mandatory.
+2. **A public HTTPS endpoint** — a tunnel that exposes the local server. **Which
+   tunnel you pick matters** (see the table below) — it's the #1 cause of the
+   "connector keeps dropping" complaint. Exposing the server to the internet makes
+   auth mandatory (next step).
 3. **A GitHub OAuth app** (client id + secret) wired into the OAuthProxy —
    claude.ai connectors require OAuth; static tokens aren't accepted.
 4. **Lock it to your GitHub login** (the single-user verifier), then run it as a
@@ -233,10 +232,49 @@ publicly-reachable, authenticated endpoint:
    [README](README.md) covers all three platforms).
 5. **Add it as a custom connector** in claude.ai.
 
-The main [README](README.md) documents this path end-to-end (it's Hugo's exact
-setup). Rule of thumb: the **local path is ~90% of the value for ~20% of the
-effort**; the mobile tier is the rest — worth it if you genuinely want your KB
+### Which public endpoint? (read this before you pick)
+
+claude.ai's connector re-authenticates in **bursts** — a tight `/.well-known` →
+`register` → `authorize` → `token` sequence. A shared-relay tunnel can throttle
+that burst and silently drop it, which surfaces as a connector that **"keeps
+dropping" and needs constant reconnecting.** Pick a burst-tolerant ingress:
+
+| Your situation | Use | Notes |
+| --- | --- | --- |
+| **You only use Claude Code (desktop)** | **No tunnel at all** — the local stdio path above | Nothing public, nothing to drop. The whole remote tier is *only* for web/mobile — if you don't need your KB on your phone, stop here. |
+| **You own / will buy a domain** (~$1–12/yr) | **Cloudflare Tunnel** — *recommended* | Burst-tolerant, no request caps; Hugo's exact setup. Put any cheap domain on Cloudflare's free plan (switch its nameservers), then follow **[deploy/cloudflared/RUNBOOK.md](deploy/cloudflared/RUNBOOK.md)**. |
+| **No domain, won't buy one** | **ngrok** free dev domain | Burst-tolerant too, a free *stable* `*.ngrok-free.dev` host, no purchase. Caveats below. See **[deploy/ngrok/RUNBOOK.md](deploy/ngrok/RUNBOOK.md)**. |
+| **Already on Tailscale Funnel and it's dropping** | Restart Tailscale to recover *now*, then migrate | `*.ts.net` is free + no-domain, but its **shared relay throttles claude.ai's reconnect bursts** — that's the dropping. `Restart-Service Tailscale` (admin) clears it temporarily; move to Cloudflare or ngrok for a real fix. |
+
+**ngrok caveats (so you're not surprised):** the free tier shows a one-time
+"Visit Site" interstitial on the GitHub-login *browser* redirect (one click, then
+a cookie suppresses it ~7 days; it does **not** affect claude.ai's API/OAuth
+calls, which are exempt as programmatic traffic), and caps you at **20,000
+requests/month** — fine for light personal use, a ceiling under heavy use. It's a
+genuine no-cost path; Cloudflare-with-a-domain is the more bulletproof one.
+
+The main [README](README.md) documents the OAuth-app + service steps end-to-end
+(Hugo's setup). Rule of thumb: the **local path is ~90% of the value for ~20% of
+the effort**; the remote tier is the rest — worth it if you genuinely want your KB
 in your pocket.
+
+### Connector keeps dropping? (quick triage)
+
+Almost always the **path, not the server** — the kb-mcp service is usually fine.
+Before touching it:
+
+1. **Is the service actually up?** `curl.exe -i http://127.0.0.1:8765/mcp`
+   (Windows) / `curl -i http://127.0.0.1:8765/mcp` → a fast **401** means
+   healthy (the 401 is the auth funnel doing its job, not an error). If you get
+   that 401, the break is the tunnel, not kb-mcp — **don't restart the service**
+   (it only wedges any live chats).
+2. **Do you even need the remote tier?** If you mostly use Claude Code on the
+   desktop, drop the public endpoint and use the **local stdio** path above —
+   nothing public means nothing to drop.
+3. **On Tailscale Funnel?** That's the usual culprit (shared-relay burst
+   throttle). `Restart-Service Tailscale` (admin) gets you connected again now;
+   then migrate to **Cloudflare** (with a domain) or **ngrok** (no domain) per the
+   table above for a durable fix.
 
 ### Make the KB proactive in the Claude app (custom instructions)
 

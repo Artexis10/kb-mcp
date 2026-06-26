@@ -176,23 +176,33 @@ uv sync --extra embeddings --extra media
 #       uv run python -m kb_mcp backfill-media             # do it (CPU or GPU)
 #     Flags: --no-ocr (sidecar + CLIP only), --no-clip, --vault <root>.
 
-# 2. Set up a public HTTPS URL (you need this hostname in step 3). Pick ONE:
+# 2. Set up a public HTTPS URL (you need this hostname in step 3). Pick a
+#    BURST-TOLERANT ingress: claude.ai re-auths in bursts and a shared relay that
+#    throttles them shows up as a connector that "keeps dropping."
 #
-#    OPTION A - Tailscale Funnel: NO domain needed, free <device>.<tailnet>.ts.net
-#    host, simplest. Best if you don't own a domain. In the Tailscale admin console
-#    enable HTTPS for the tailnet + Funnel for this node, then:
-tailscale funnel --bg --https=443 http://127.0.0.1:8765
-tailscale funnel status        # note the URL, e.g. https://<device>.<tailnet>.ts.net
-#    (Funnel's shared relay can throttle bursty reconnects under heavy use; if that
-#    bites, restart Tailscale, or switch to Option B.)
-#
-#    OPTION B - Cloudflare Tunnel: needs a domain you own in Cloudflare; more
-#    burst-tolerant under load. Prereq: winget install --id Cloudflare.cloudflared
+#    OPTION A (recommended) - Cloudflare Tunnel: needs a domain you own in Cloudflare;
+#    burst-tolerant, no request caps. Any cheap domain (~$1-12/yr) on Cloudflare's
+#    free plan works. Prereq: winget install --id Cloudflare.cloudflared
 cloudflared tunnel login
 pwsh -File scripts/setup-cloudflared.ps1 -Hostname kb.substratesystems.io -TunnelName kb-mcp-desktop
 #    -> https://kb.substratesystems.io (script makes the tunnel + DNS + auto-start
 #    service). In the CF dashboard for this hostname: Bot Fight Mode OFF + no WAF
 #    managed ruleset (Security Level low); the edge caps requests at ~100s.
+#    Full runbook: deploy/cloudflared/RUNBOOK.md
+#
+#    OPTION B - ngrok: NO domain needed, burst-tolerant, free stable *.ngrok-free.dev
+#    host. Free-tier caveats: a one-time "Visit Site" click on the GitHub-login
+#    redirect + a 20,000 requests/month cap. Best no-purchase path.
+ngrok config add-authtoken <token>   # then reserve a free domain in the dashboard
+ngrok http --url=https://<name>.ngrok-free.dev 8765   # older agents: --domain=<name>.ngrok-free.dev
+#    Full runbook (incl. running it as a service): deploy/ngrok/RUNBOOK.md
+#
+#    OPTION C - Tailscale Funnel: NO domain needed, free <device>.<tailnet>.ts.net
+#    host, BUT its shared relay throttles claude.ai's reconnect bursts -> the connector
+#    "keeps dropping." Workable for light use; `Restart-Service Tailscale` recovers it
+#    when it drops, but prefer Option A/B for a durable fix.
+tailscale funnel --bg --https=443 http://127.0.0.1:8765
+tailscale funnel status        # note the URL, e.g. https://<device>.<tailnet>.ts.net
 ```
 
 ### 3. Create a GitHub OAuth App (one-time, ~3 min)
@@ -224,8 +234,8 @@ KB_MCP_JWT_SIGNING_KEY=<long-random-string>
 KB_MCP_VAULT_PATH=<your-Obsidian-vault-root>
 ```
 
-`KB_MCP_BASE_URL` must match your public hostname (Tailscale Funnel or Cloudflare
-Tunnel, from step 2) exactly — no trailing slash, no `/mcp` suffix. `KB_MCP_GITHUB_USERNAME` is case-insensitive but must
+`KB_MCP_BASE_URL` must match your public hostname (Cloudflare Tunnel, ngrok, or
+Tailscale Funnel, from step 2) exactly — no trailing slash, no `/mcp` suffix. `KB_MCP_GITHUB_USERNAME` is case-insensitive but must
 be the *login* (e.g. `Artexis10`), not the display name. `KB_MCP_VAULT_PATH` is
 **required**: claude.ai connects over HTTP and passes no environment, so the
 service resolves the vault solely from this line in `.env` at startup.

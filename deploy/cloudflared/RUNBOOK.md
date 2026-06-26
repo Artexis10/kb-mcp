@@ -5,9 +5,14 @@ setup or **migrating an existing host off Tailscale Funnel**. The server code is
 unchanged (the public URL is env-driven via `KB_MCP_BASE_URL`); this is purely
 ingress + `.env` + GitHub OAuth App + the claude.ai connector.
 
-> **No domain?** Cloudflare Tunnel needs a domain you own in Cloudflare. If you don't
-> have one, use **Tailscale Funnel** instead (free `*.ts.net`, no domain) — see the
-> README "Option A". This runbook is for the Cloudflare path.
+> **No domain?** Cloudflare Tunnel needs a domain you own in Cloudflare — but a cheap
+> one (~$1–12/yr) added to Cloudflare's **free** plan (register anywhere, switch its
+> nameservers to Cloudflare) is enough, and this is the most robust path (no request
+> caps, no interstitial). If you truly won't buy one, use **[ngrok](../ngrok/RUNBOOK.md)**
+> instead (free *stable* `*.ngrok-free.dev`, no domain, also burst-tolerant) — **not**
+> Tailscale Funnel, whose shared relay throttles claude.ai's reconnect bursts (the
+> "keeps dropping" failure this migration exists to fix). This runbook is the
+> Cloudflare path.
 
 Substitute throughout:
 - `<HOST>` = `kb.substratesystems.io` (desktop) / `kb-laptop.substratesystems.io` (laptop)
