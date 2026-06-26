@@ -33,6 +33,33 @@ def test_preserve_text_artifact_writes_file(vault: Path) -> None:
     assert result.sidecar_path is None  # no description supplied
 
 
+def test_cap_extracted_text_passthrough_under_limit() -> None:
+    assert preserve_module._cap_extracted_text("short content") == "short content"
+
+
+def test_cap_extracted_text_truncates_over_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preserve_module, "_MAX_EXTRACT_BYTES", 1000)
+    out = preserve_module._cap_extracted_text("A" * 5000)
+    assert len(out.encode("utf-8")) < 5000           # genuinely shrunk
+    assert out.startswith("A" * 200)                 # kept the (most-relevant) start
+    assert "truncated" in out and "/download" in out  # marker + pointer to the binary
+
+
+def test_capped_sidecar_keeps_corpus_small(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The worker/backfill write path must cap, so one oversized doc can't poison find.
+    monkeypatch.delenv("KB_MCP_DISABLE_MEDIA_EXTRACTION", raising=False)
+    monkeypatch.setattr(preserve_module, "_MAX_EXTRACT_BYTES", 500)
+    res = preserve_module.preserve_bytes(
+        vault, scope="Test", category="docs", filename="huge.docx", data=b"BINARY"
+    )
+    sidecar = vault / res.sidecar_path
+    preserve_module.update_sidecar_extraction(vault, sidecar, text="Z" * 20000, engine="markitdown")
+    body = _read(sidecar)
+    assert "truncated" in body
+    assert body.count("Z") < 20000           # capped, not the full 20k chars
+    assert len(body.encode("utf-8")) < 5000  # sidecar stays small → corpus protected
+
+
 def test_preserve_binary_artifact_decodes_base64(vault: Path) -> None:
     payload = b"\x89PNG\r\n\x1a\nfakepng"
     result = preserve_module.preserve(
