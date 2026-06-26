@@ -26,6 +26,7 @@ import base64
 import datetime as dt
 import io
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,33 @@ from .vault import PlannedWrite, batch_atomic_write, escape_wikilinks_for_log, k
 
 
 log = logging.getLogger(__name__)
+
+# Cap extracted text written into a sidecar. `find` rebuilds BM25 over the whole
+# corpus per query, so one oversized document (e.g. a 7 MB HTML export rendered to
+# markdown) re-tokenizes on every search and degrades ALL lookups. 512 KB sits well
+# above any real document yet kills pathological machine-dumps. The original binary
+# is always preserved — pull the full content via /download. Env-overridable.
+_MAX_EXTRACT_BYTES = int(os.environ.get("KB_MCP_MAX_EXTRACT_BYTES", 512 * 1024))
+
+
+def _cap_extracted_text(text: str) -> str:
+    """Truncate extracted text to `_MAX_EXTRACT_BYTES` (UTF-8), keeping the start.
+
+    No-op for normal documents. A truncated doc stays findable by its start + title;
+    only content past the cap isn't text-indexed (the binary still holds it all).
+    """
+    raw = text.encode("utf-8")
+    if len(raw) <= _MAX_EXTRACT_BYTES:
+        return text
+    kept = raw[:_MAX_EXTRACT_BYTES].decode("utf-8", errors="ignore").rstrip()
+    log.warning(
+        "extracted text %d bytes exceeds cap %d — truncated; full content stays in the binary",
+        len(raw), _MAX_EXTRACT_BYTES,
+    )
+    return (
+        f"{kept}\n\n[... truncated: kept first {_MAX_EXTRACT_BYTES // 1024} KB of "
+        f"{len(raw) // 1024} KB; full content is in the original binary — pull it via /download ...]"
+    )
 
 MAX_DECODED_BYTES = 5 * 1024 * 1024  # 5 MB — base64-via-model path (tokens cost real money)
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — HTTP /upload path (raw bytes, no token cost).
@@ -482,7 +510,7 @@ def _render_sidecar(
         lines.append("## Extracted text")
         lines.append("")
         if text:
-            lines.append(text)
+            lines.append(_cap_extracted_text(text))
             lines.append("")
     return "\n".join(lines)
 
@@ -542,7 +570,7 @@ def update_sidecar_extraction(
     """
     content = sidecar_path.read_text(encoding="utf-8")
     content = _set_frontmatter_field(content, "extracted_by", engine)
-    content = _set_extracted_text(content, text)
+    content = _set_extracted_text(content, _cap_extracted_text(text))
     batch_atomic_write([PlannedWrite(path=sidecar_path, content=content)], vault_root=vault_root)
 
 
