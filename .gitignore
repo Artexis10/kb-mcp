@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.env
+logs/*
+!logs/.gitkeep
+analysis/
+*.tmp
+dist/
+build/
+*.egg-info/
+
+# Local-only genericize inputs for genericize-schema.py (real personal tokens).
+scripts/generic/leakguard.txt
+scripts/generic/substitutions.txt
+
+# Agent / session scratch — never publish (holds absolute machine paths,
+# session transcripts, and project memory). Untracked but present in working
+# checkouts; ignored so a stray `git add` can't leak them into the public repo.
+.omc/
+.claude/

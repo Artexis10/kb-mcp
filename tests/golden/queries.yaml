@@ -1,0 +1,55 @@
+# Golden query set for retrieval eval (scripts/eval_retrieval.py).
+#
+# SEED set — hand-authored against the bundled fixture KB (tests/fixtures/) so
+# the baseline number is meaningful and the example runs out of the box. Point
+# the eval at the fixtures with KB_MCP_VAULT_PATH=tests/fixtures, or replace
+# these with queries against your own vault. The set is meant to GROW:
+# scripts/derive_relevance_pairs.py proposes additions mined from real
+# (query -> cited path) usage, which you confirm.
+#
+# Each entry:
+#   query:         the search string (natural language, not a title echo)
+#   expect_any_of: [vault paths] treated as binary-relevant (grade 1), OR
+#   graded:        {path: grade 0..3} for NDCG grading (3=ideal, 1=marginal)
+#
+# Paths are matched leniently: leading "Knowledge Base/" and ".md" optional,
+# case-insensitive (see _canon in eval_retrieval.py).
+
+- query: "do single behavioural modes beat basic/advanced toggles for mixed-skill tools"
+  expect_any_of:
+    - "Knowledge Base/Notes/Insights/progressive-disclosure-without-mode-fragmentation"
+
+- query: "how do you stop a cryptographic protocol from drifting across implementations"
+  expect_any_of:
+    - "Knowledge Base/Notes/Patterns/locked-cryptographic-contract-with-rfc-citations"
+
+- query: "vendor packages developed on mac break on windows paths and locking"
+  expect_any_of:
+    - "Knowledge Base/Notes/Failures/vendor-package-mismatch-with-shipping-platform"
+
+- query: "how is the Go CLI engine structured and what is the engine/GUI boundary"
+  expect_any_of:
+    - "Knowledge Base/Notes/Research/Project Alpha/engine-architecture"
+
+- query: "the JSON wrapper a CLI writes to stdout as the canonical final state"
+  expect_any_of:
+    - "Knowledge Base/Entities/Concepts/Envelope"
+
+- query: "best eight-module sequence for teaching metabolism via short-form video"
+  expect_any_of:
+    - "Knowledge Base/Notes/Research/Health/metabolic-literacy-curriculum"
+
+- query: "EGCG dose-response and bioavailability with vitamin C"
+  expect_any_of:
+    - "Knowledge Base/Sources/Articles/2026-05-04-best-egcg-supplements"
+
+- query: "elimination diet protocol — strict phase then staged reintroduction"
+  expect_any_of:
+    - "Knowledge Base/Sources/Books/2026-05-03-elimination-diet"
+
+# Graded example: the curriculum research-note is the ideal hit; the production
+# log that applies it is marginally relevant to the same query.
+- query: "the metabolism reels batch curriculum and how it was produced"
+  graded:
+    "Knowledge Base/Notes/Productions/Reels/2026-05-metabolism-basics": 3
+    "Knowledge Base/Notes/Research/Health/metabolic-literacy-curriculum": 1

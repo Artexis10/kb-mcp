@@ -1,0 +1,179 @@
+"""Regression backstop: the shipped generic scaffold must not contain personal data.
+
+`src/kb_mcp/_scaffold/` is the generic starter skill shipped to new users (via
+`init` / `install-skill`). Its `_Schema/` is a HAND-AUTHORED, deliberately-generic
+starter (not derived from any private vault). This test scans the COMMITTED
+scaffold two ways:
+
+1. `test_scaffold_ships_no_personal_data` — structural machine-path/personal
+   patterns (the `LEAK_PATTERNS` shared with the retired genericize script + the
+   still-live rebuild-schema-zip tooling), so the structural guard never drifts.
+2. `test_scaffold_ships_no_personal_tokens` — an explicit denylist of the
+   author's personal names, products, podcast, domain, and vault-structure
+   labels. This is the hard wall: the leak class (which once shipped real
+   tenant/product/collaborator names to a friend) cannot recur on a hand-edit.
+
+Both run without the vault, so they work in CI.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+from pathlib import Path
+
+import kb_mcp
+
+# The whole shipped scaffold (not just _Schema): index/log stubs, Sources/Notes/
+# Entities indexes, and the _Schema docs all ship to new users.
+SCAFFOLD = Path(kb_mcp.__file__).resolve().parent / "_scaffold"
+SCAFFOLD_SCHEMA = SCAFFOLD / "_Schema"
+SOURCE = Path(kb_mcp.__file__).resolve().parent  # src/kb_mcp/
+REPO = Path(kb_mcp.__file__).resolve().parent.parent.parent  # src/kb_mcp -> repo root
+
+
+# Explicit personal-token denylist. Each entry is (label, regex, case_insensitive).
+# Careful matching avoids false positives on legitimate generic prose:
+#   - word boundaries on short names (Hugo, Kim),
+#   - "Sift" and "Yolo" are matched CASE-SENSITIVELY (title-case product/employer
+#     names) so they don't collide with the common verb "sift"/"shift" or the
+#     all-caps "YOLO" model,
+#   - "substrate" is a substring guard catching the company, the project key,
+#     and substratesystems.io — the generic scaffold avoids the common noun
+#     "substrate" entirely so this is safe,
+#   - bare "Q" and "tu" are deliberately NOT denylisted (too generic).
+_CI = True   # case-insensitive
+_CS = False  # case-sensitive
+_PERSONAL_TOKENS: list[tuple[str, str, bool]] = [
+    ("Hugo", r"\bHugo\b", _CI),
+    ("hugoander", r"hugoander", _CI),
+    ("Kim", r"\bKim\b", _CI),
+    ("Kimberly", r"\bKimberly\b", _CI),
+    ("Krafft", r"\bKrafft\b", _CI),
+    ("Substrate / substratesystems", r"substrate", _CI),  # company / key / domain
+    ("Endstate", r"endstate", _CI),                        # product
+    ("Sift", r"\bSift\b", _CS),                             # product (not "sift"/"shift")
+    ("Together Unprocessed", r"together\s+unprocessed", _CI),
+    ("Chaffee / ask-dr-chaffee", r"chaffee", _CI),
+    ("Cognitive Core", r"cognitive\s+core", _CI),
+    ("Personal Context", r"personal\s+context", _CI),
+    ("Yolo", r"\bYolo\b", _CS),                             # employer (not "YOLO" model)
+    ("Mother Cancer", r"mother\s+cancer", _CI),
+]
+
+
+# Source-tree denylist (src/kb_mcp/**). Distinct from the scaffold list above:
+# the shipped Python SOURCE legitimately uses the bare architecture noun
+# "substrate" (the "pure-substrate" principle), so this denylists
+# `substratesystems` (the domain/company) rather than bare `substrate`. Product
+# names that collide with common words are matched case-sensitively (`Sift`).
+_SOURCE_PERSONAL_TOKENS: list[tuple[str, str, bool]] = [
+    ("Hugo", r"\bHugo\b", _CI),
+    ("hugoander", r"hugoander", _CI),
+    ("Kim", r"\bKim\b", _CI),
+    ("Kimberly", r"\bKimberly\b", _CI),
+    ("Krafft", r"\bKrafft\b", _CI),
+    ("substratesystems", r"substratesystems", _CI),       # domain/company (NOT bare "substrate")
+    ("Endstate", r"\bendstate\b", _CI),                   # product
+    ("Sift", r"\bSift\b", _CS),                            # product (not "sift"/"shift")
+    ("Together Unprocessed", r"together\s+unprocessed", _CI),
+    ("Chaffee / ask-dr-chaffee", r"chaffee", _CI),
+    ("Cognitive Core", r"cognitive\s+core", _CI),
+    ("Personal Context", r"personal\s+context", _CI),
+]
+
+
+def _source_files() -> list[Path]:
+    return [f for f in sorted(SOURCE.rglob("*")) if f.is_file()]
+
+
+def _leak_patterns() -> list[str]:
+    """Import the structural pattern list from the (hyphenated) genericize script
+    by path, so the test and the generator never drift."""
+    spec = importlib.util.spec_from_file_location(
+        "genericize_schema", REPO / "scripts" / "genericize-schema.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.LEAK_PATTERNS
+
+
+def _scaffold_files() -> list[Path]:
+    return [f for f in sorted(SCAFFOLD.rglob("*")) if f.is_file()]
+
+
+def test_scaffold_ships_no_personal_data() -> None:
+    """Structural machine-path/personal patterns (shared with the generator)."""
+    patterns = [re.compile(p) for p in _leak_patterns()]
+    offenders: list[str] = []
+    for f in sorted(SCAFFOLD_SCHEMA.rglob("*")):
+        if not f.is_file():
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for p in patterns:
+                if p.search(line):
+                    offenders.append(
+                        f"{f.relative_to(SCAFFOLD_SCHEMA)}:{i}: /{p.pattern}/ -> {line.strip()[:80]}"
+                    )
+    assert not offenders, (
+        "personal-data patterns found in the shipped scaffold — the scaffold is "
+        "hand-authored; fix it directly and keep it generic:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_scaffold_ships_no_personal_tokens() -> None:
+    """Explicit denylist: the author's names/products/podcast/domain/structure
+    must not appear ANYWHERE under src/kb_mcp/_scaffold/."""
+    compiled = [
+        (label, re.compile(rx, re.IGNORECASE if ci else 0))
+        for label, rx, ci in _PERSONAL_TOKENS
+    ]
+    offenders: list[str] = []
+    for f in _scaffold_files():
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for label, p in compiled:
+                if p.search(line):
+                    offenders.append(
+                        f"{f.relative_to(SCAFFOLD)}:{i}: token {label!r} -> {line.strip()[:80]}"
+                    )
+    assert not offenders, (
+        "personal tokens found in the shipped scaffold — genericize before "
+        "shipping (the scaffold is the public face of the skill):\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_source_ships_no_personal_tokens() -> None:
+    """The shipped Python source (src/kb_mcp/**) must not name the author,
+    their collaborators, products, or vault-structure labels.
+
+    This is the hard wall for the SOURCE CODE de-identification pass: comments,
+    docstrings, fallback constants, and config defaults must stay generic so an
+    open-source release can't leak the original tenant. It deliberately allows
+    the bare noun "substrate" (the pure-substrate architecture term) and pins
+    `substratesystems` instead.
+    """
+    compiled = [
+        (label, re.compile(rx, re.IGNORECASE if ci else 0))
+        for label, rx, ci in _SOURCE_PERSONAL_TOKENS
+    ]
+    assert compiled, "denylist must be non-empty (test would be vacuous)"
+    files = _source_files()
+    assert files, "no files found under src/kb_mcp/ — wrong scan root?"
+    offenders: list[str] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # compiled/binary artifacts (e.g. __pycache__) — skip
+        for i, line in enumerate(text.splitlines(), 1):
+            for label, p in compiled:
+                if p.search(line):
+                    offenders.append(
+                        f"{f.relative_to(SOURCE)}:{i}: token {label!r} -> {line.strip()[:80]}"
+                    )
+    assert not offenders, (
+        "personal tokens found in the shipped Python source — genericize "
+        "before open-sourcing:\n" + "\n".join(offenders)
+    )

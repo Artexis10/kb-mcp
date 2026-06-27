@@ -1,0 +1,108 @@
+[project]
+name = "kb-mcp"
+version = "0.1.0"
+description = "Self-hosted MCP server exposing an Obsidian/markdown knowledge base to any MCP client (Claude, Cursor, ...), with multimodal OCR/ASR/CLIP search"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Hugo Ander", email = "founder@substratesystems.io" }]
+
+dependencies = [
+    "fastmcp>=2.10",
+    "pyyaml>=6.0",
+    "python-slugify>=8.0",
+    "python-dotenv>=1.0",
+    "python-multipart>=0.0.9",  # Starlette multipart parsing for the /upload route
+    "pyjwt[crypto]>=2.8",       # Cloudflare Access JWT verification for /upload (optional path)
+    "rank-bm25>=0.2.2",
+    "numpy>=1.26",
+    "snowballstemmer>=2.2",
+]
+
+# Hybrid semantic search (local vector embeddings). Optional so a lean install
+# — `pip install -e .` — works in keyword/BM25 mode (KB_MCP_DISABLE_EMBEDDINGS=1)
+# without the ~1-2 GB torch/CUDA download. The code soft-falls back to BM25 when
+# these aren't importable. Full hybrid (a full install):
+#   pip install -e ".[embeddings]"
+[project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=2.7",
+    "torch>=2.12",
+    "pillow>=10.0",  # CLIP image encoding opens images via PIL (sentence-transformers)
+]
+# Server-side media extraction (transduction, not a brain): ASR for audio/video,
+# OCR for images, text for PDFs, MarkItDown for office/html docs. Optional so a lean box
+# runs without it — the code
+# soft-falls back (server extraction skipped; the model-driven /upload `text` path
+# still works). Full install: `uv sync --extra embeddings --extra media`.
+# System deps NOT pip-installable: Tesseract (image OCR) — `winget install UB-Mannheim.TesseractOCR`.
+# faster-whisper bundles its CUDA runtime via ctranslate2; PyAV (pulled by faster-whisper)
+# bundles ffmpeg for audio/video decode. See README for the Blackwell sm_120 note.
+media = [
+    "faster-whisper>=1.0",
+    "pytesseract>=0.3.10",
+    "pillow>=10.0",  # pytesseract opens images via PIL for OCR
+    "pymupdf>=1.24",
+    # docx/xlsx/pptx/html → markdown (Microsoft MarkItDown, MIT). The per-format extras
+    # pull the office libs (mammoth/openpyxl/python-pptx); runs fully local. PDF stays on
+    # PyMuPDF (markitdown's PDF path is its weakest). txt/eml/ics use stdlib, no dep.
+    "markitdown[docx,xlsx,pptx]>=0.1.1",
+    # CUDA-12 runtime for faster-whisper/ctranslate2 on Windows. torch+cu132 ships
+    # cuBLAS *13* (different major), so ctranslate2's CUDA-12 cuBLAS + cudart must be
+    # supplied separately and their bin dirs put on PATH before load — see
+    # extract._ensure_cuda_dll_path(). Verified on an RTX 5080 (sm_120). On Linux,
+    # ctranslate2 resolves CUDA via the wheels' RPATH; see README if a GPU box needs them.
+    "nvidia-cublas-cu12; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12; sys_platform == 'win32'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kb_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+# Blackwell (RTX 50-series, sm_120 / compute capability 12.0) needs CUDA wheels.
+# Default PyPI torch on Windows is STILL CPU-only (verified 2026-05 against uv's
+# PyTorch integration guide), so an explicit CUDA index is required to get a GPU
+# build on Windows. The cu132 (CUDA 13.2) wheel ships sm_120 —
+# `torch.cuda.get_arch_list()` includes it, so any RTX 50-series GPU works.
+#
+# The platform marker scopes the CUDA index to win32/linux; other platforms (e.g.
+# macOS) fall back to default PyPI. We deliberately do NOT use
+# `UV_TORCH_BACKEND=auto`: it resolves per-machine at install time, which would
+# break lockfile reproducibility across the desktop + laptop hosts — the explicit
+# pinned index keeps both boxes on the same wheel. `explicit = true` keeps this
+# index out of general resolution. Multi-host GPU bring-up is documented in README.
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu132", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pragmatic starter set; advisory in CI until the baseline is curated.
+select = ["E", "F", "I", "B", "UP", "BLE"]
+# The @mcp.tool docstrings ARE the LLM-facing tool schema and are intentionally
+# long; line-wrapping elsewhere is the formatter's job, not a lint gate.
+ignore = ["E501"]

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Run tests (lean — BM25/keyword, server media extraction off)
+        env:
+          # The suite runs without the embeddings/media extras; these mirror the
+          # conftest autouse defaults so a forgotten extra can't change behaviour.
+          KB_MCP_DISABLE_EMBEDDINGS: "1"
+          KB_MCP_DISABLE_MEDIA_EXTRACTION: "1"
+        run: uv run --python ${{ matrix.python-version }} python -m pytest -q
+
+  lint:
+    name: ruff (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Ruff check (advisory — not yet gating)
+        # Non-blocking until the lint baseline is curated; surfaces issues without
+        # failing the build. Flip to gating once the tree is clean.
+        continue-on-error: true
+        run: uvx ruff check .
