@@ -109,19 +109,18 @@ def _get_voice_model():
 def _load_audio(audio_path):
     """Load `audio_path` as a mono 16 kHz float waveform `(1, N)` torch tensor + sample rate.
 
-    Uses torchaudio (pulled in by speechbrain); absent/undecodable → the caller catches and
-    returns None. Multi-channel audio is downmixed to mono; non-16 kHz is resampled so spans
-    align with ECAPA's training rate.
+    Decodes via faster-whisper's PyAV-based `decode_audio` (handles wav/mp3/m4a/video; already a
+    media dep, present whenever ASR/diarization runs) — NOT torchaudio, whose 2.x decode routes
+    through `torchcodec`, whose native lib fails to load against torch-cu132 (the diarization
+    blocker diagnosed 2026-06-28). `decode_audio` returns a mono float32 array already resampled
+    to the target rate. absent/undecodable → the caller catches and returns None.
     """
-    import torchaudio
+    import torch
+    from faster_whisper.audio import decode_audio  # soft dep — bundles PyAV/ffmpeg, no torchcodec
 
-    waveform, sr = torchaudio.load(str(audio_path))
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    if sr != _TARGET_SR:
-        waveform = torchaudio.functional.resample(waveform, sr, _TARGET_SR)
-        sr = _TARGET_SR
-    return waveform, sr
+    samples = decode_audio(str(audio_path), sampling_rate=_TARGET_SR)
+    waveform = torch.from_numpy(np.ascontiguousarray(samples, dtype=np.float32)).unsqueeze(0)
+    return waveform, _TARGET_SR
 
 
 def embed_spans(audio_path, spans) -> np.ndarray | None:

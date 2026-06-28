@@ -325,7 +325,15 @@ def _run_diarization(path: Path) -> list[tuple[float, float, str]] | None:
         log.warning("diarization pipeline load failed; using plain transcript", exc_info=True)
         return None
     try:
-        annotation = pipeline(str(path))
+        # Decode via faster-whisper's PyAV path and hand pyannote a pre-decoded waveform dict,
+        # bypassing pyannote 4.x / torchaudio's torchcodec decoder (its native lib won't load
+        # against torch-cu132 — the diarization blocker diagnosed 2026-06-28).
+        import torch
+        from faster_whisper.audio import decode_audio
+
+        samples = decode_audio(str(path), sampling_rate=16000)
+        waveform = torch.as_tensor(samples, dtype=torch.float32).unsqueeze(0)
+        annotation = pipeline({"waveform": waveform, "sample_rate": 16000})
         return [
             (float(turn.start), float(turn.end), str(label))
             for turn, _track, label in annotation.itertracks(yield_label=True)
