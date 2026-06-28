@@ -285,6 +285,11 @@ absent. Tune with `KB_MCP_IMAGE_TAGS_TOPK` (default 5) and
 `KB_MCP_IMAGE_TAGS_THRESHOLD` (raw cosine, default 0.22); only newly-extracted
 images are tagged.
 
+**Install:** `uv sync --extra media --extra diarization`, then **`uv pip uninstall torchcodec`**
+— the extra pulls `torchcodec` transitively, but its native lib won't load against the torch-cu132
+build and importing it breaks `sentence-transformers` (the embedding stack); it's unused here
+(audio decode goes through faster-whisper's PyAV path), so it must be removed.
+
 Named-speaker diarization's ECAPA voice embedder (`diarization` extra) runs on
 torch and follows the same precedent: it defaults to **CPU when ASR is active**, with
 a `KB_MCP_VOICE_DEVICE=cuda`/`cpu` override. Enroll voices with

@@ -65,6 +65,10 @@ media = [
 # Heavy + default-OFF + soft-fail, so it's an extra, never a core dep — the base install and
 # the test suite never require it. Both pyannote and the ECAPA checkpoint gate their weights
 # behind a HF token (HUGGINGFACE_TOKEN). Full install: `uv sync --extra media --extra diarization`.
+# WARNING (diagnosed 2026-06-28): the extra transitively pulls `torchcodec`, whose native lib
+# won't load against the torch-cu132 build AND breaks `sentence-transformers` (the embedding
+# stack) on import. It is UNUSED here — audio decode goes through faster-whisper's PyAV path —
+# so REMOVE it after installing: `uv pip uninstall torchcodec`.
 diarization = [
     "pyannote.audio>=3.1",
     "speechbrain>=1.0",  # ECAPA-TDNN speaker embeddings for named-speaker attribution
