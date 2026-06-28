@@ -105,6 +105,28 @@ def _evaluate(
     }
 
 
+def rank_queries(
+    vault_root: Path,
+    queries: list[str],
+    config: find_module.RankingConfig,
+    *,
+    rerank: bool = False,
+    k: int = 10,
+) -> dict[str, list[str]]:
+    """Return `{query: [canon'd ranked paths]}` for each query under `config`.
+
+    The canonical find()+`_canon` path, reused by the auto-tuner's pair metrics so
+    mined-pair scoring sees exactly what `_evaluate` scores for golden queries.
+    """
+    out: dict[str, list[str]] = {}
+    for q in queries:
+        hits = find_module.find(
+            vault_root, query=q, limit=k, mode="hybrid", rerank=rerank, config=config
+        )
+        out[q] = [_canon(h.path) for h in hits]
+    return out
+
+
 def _config_label(cfg: find_module.RankingConfig, rerank: bool) -> str:
     return (
         f"rrf_k={cfg.rrf_k} boost={cfg.compiled_boost} "
