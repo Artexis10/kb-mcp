@@ -78,10 +78,14 @@
 - [x] 5.2 `uvx ruff check` clean on changed files (no new findings vs `origin/main`;
       the repo's lint is advisory with a known baseline).
 - [x] 5.3 `openspec validate close-auto-tune-loop --strict` passes.
-- [ ] 5.4 Live-vault smoke (Hugo, GPU/embeddings box — needs torch + live vault):
-      `uv run python scripts/derive_relevance_pairs.py` twice → idempotent snapshot,
-      no dupes; `uv run python scripts/auto_tune_ranking.py` → mines fresh, prints
-      golden baseline + best (likely guard-OFF / no-op at ~21 pairs, which is
-      correct), writes `logs/ranking_config.candidate.json` + report; `--adopt`
-      writes `ranking_config.json` only when it passes the golden floor; deploy +
-      restart picks it up; deleting it reverts.
+- [x] 5.4 Live-vault smoke (2026-06-28/29, on the GPU box). VALIDATED: mining on the
+      real logs (queries.jsonl 822KB) → 21 pairs + idempotent snapshot; the loop
+      ENGAGES on real signal — 10 distinct eligible queries (≥ MIN_PAIRS=8), guard OFF
+      (overturned the earlier "no-op until usage compounds" expectation); end-to-end
+      run with the new code clean. DEFERRED: the full coordinate descent did not
+      converge to a candidate in practical wall-time on the live vault even with the
+      `scope="kb-only"` eval speedup — the per-`find()` eval over the large KB tree is
+      the floor (~70 CPU-min, no candidate). So `--adopt` of a tuned `ranking_config.json`
+      awaits either a long unattended run or an eval-harness perf pass (follow-on). The
+      adopted-config seam itself is shipped + default-off; deploy (`reset --hard` +
+      restart) is the maintainer's step.
