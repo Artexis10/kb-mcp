@@ -193,6 +193,23 @@ def embed_clip_text(query: str) -> np.ndarray:
     return vec.astype(np.float32, copy=False)
 
 
+def embed_clip_texts(texts: list[str]) -> np.ndarray:
+    """Batch-encode texts into CLIP space → float32 `(N, 512)`, L2-normalized.
+
+    Same shared image+text space as `embed_image`, so a cosine between an image vector
+    and these text vectors is a valid zero-shot match score. Used to embed the fixed
+    image-tag vocabulary once (image_tags). Raises ClipUnavailable when CLIP is missing.
+    """
+    if not texts:
+        return np.zeros((0, CLIP_DIM), dtype=np.float32)
+    try:
+        model = get_clip_model()
+    except ImportError as e:
+        raise ClipUnavailable(f"sentence-transformers not installed: {e}") from e
+    vecs = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    return vecs.astype(np.float32, copy=False)
+
+
 CLIP_VIDEO_FRAMES = 8  # frame budget for the unknown-duration sequential fallback
 
 

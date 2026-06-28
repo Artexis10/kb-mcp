@@ -232,6 +232,9 @@ the repo root). The only required one is the vault path.
 | `KB_MCP_DISABLE_MEDIA_EXTRACTION` | `1` skips server-side OCR/ASR/PDF/office extraction. |
 | `KB_MCP_DISABLE_CLIP` | `1` disables CLIP visual image search. |
 | `KB_MCP_CLIP_DEVICE` | `cpu`/`cuda` override for CLIP (defaults to CPU when ASR is active). |
+| `KB_MCP_IMAGE_TAGS` | Set to append zero-shot CLIP tags (`Tags: invoice, table, …`) to an image's indexed text. Default off; no new dependency (reuses CLIP). |
+| `KB_MCP_IMAGE_TAGS_TOPK` | Max image tags to emit per image (default `5`). |
+| `KB_MCP_IMAGE_TAGS_THRESHOLD` | Raw-cosine floor a tag must clear (default `0.22`). |
 | `KB_MCP_DIARIZE` | Set to enable opt-in ASR speaker diarization (`[Speaker A]: …` turns). |
 | `KB_MCP_VOICE_DEVICE` | `cpu`/`cuda` override for the ECAPA voice embedder (defaults to CPU when ASR is active). |
 | `KB_MCP_VOICE_EMBED_MODEL` | ECAPA checkpoint for named-speaker attribution (default `speechbrain/spkrec-ecapa-voxceleb`). |
