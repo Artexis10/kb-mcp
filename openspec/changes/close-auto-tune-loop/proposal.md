@@ -25,10 +25,12 @@ This change closes the loop and makes it **safe**: mined usage actually moves th
 tuner; a tuned config is adopted as a reviewed, reversible file (no code edit); and
 a trusted golden floor guarantees adoption can never regress retrieval.
 
-Honest expectation, stated up front: with only ~21 pairs the loop is a **no-op
-until usage compounds** — a `MIN_PAIRS` guard keeps mined signal OFF until there is
-enough of it. The deliverable is the closed, guarded mechanism, not a ranking jump
-today.
+A `MIN_PAIRS` guard keeps the mined signal OFF until there is enough of it, so the
+loop is safe when usage is thin. A real-vault smoke (2026-06-28) confirmed the
+mechanism end to end AND showed the guard is **already cleared on the live vault**:
+the current usage logs mine to 10 distinct eligible queries (≥ `MIN_PAIRS=8`), so the
+pairs term engages today — the loop tunes from real signal now, not just in the
+future. The deliverable is the closed, guarded mechanism (and it is already active).
 
 ## What Changes
 

@@ -43,9 +43,10 @@ capture ──→ mine ──→ tune ──→ review ──→ adopt ──→
    (`logs/ranking_config.report.md`). It **never** edits `find.py` or applies
    anything.
 
-   > Expect a no-op while usage is thin: until ~`--min-pairs` distinct cited
-   > queries accumulate, the guard keeps the pairs term off and the candidate equals
-   > `DEFAULT_RANKING`. That is correct — the loop is real and safe, not idle.
+   > The `--min-pairs` guard keeps the pairs term off until enough distinct cited
+   > queries accumulate (then the candidate equals `DEFAULT_RANKING`, which is correct
+   > — safe, not idle). On a vault with real usage the guard is typically already
+   > cleared, so the pairs term engages and the tune reflects how you actually search.
 
 4. **Review** — read `logs/ranking_config.report.md` (knob deltas, golden/pairs
    metrics, guard status).

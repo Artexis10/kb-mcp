@@ -84,6 +84,10 @@ def _evaluate(
             query=g["query"],
             limit=k_max,
             mode="hybrid",
+            # The golden targets are all KB paths, so evaluate KB-only: this skips
+            # the scope="kb" auto-widen scan over the ~20-folder wider vault, which
+            # dominates eval wall-time per query (the tuner makes hundreds of calls).
+            scope="kb-only",
             rerank=rerank,
             config=config,
         )
@@ -121,7 +125,9 @@ def rank_queries(
     out: dict[str, list[str]] = {}
     for q in queries:
         hits = find_module.find(
-            vault_root, query=q, limit=k, mode="hybrid", rerank=rerank, config=config
+            vault_root, query=q, limit=k, mode="hybrid",
+            scope="kb-only",  # mined-pair targets are KB paths; skip the auto-widen scan
+            rerank=rerank, config=config,
         )
         out[q] = [_canon(h.path) for h in hits]
     return out
