@@ -120,6 +120,24 @@ def test_blob_guard_preserved(vault, monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.json()["error"]["code"] == "BINARY_BLOB_REJECTED"
 
 
+def test_blob_guard_nested_edits_preserved(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`edit`'s batch mode carries the payload in edits[].new_string — REST must
+    blob-guard each nested item, mirroring the MCP middleware (not only top-level)."""
+    client = _client(vault, monkeypatch, KB_MCP_REST_API_KEY="sekret")
+    blob = "data:image/png;base64," + "A" * 40000
+    r = client.post(
+        "/api/edit",
+        json={
+            "path": "Knowledge Base/Notes/Insights/x.md",
+            "why": "nested blob",
+            "edits": [{"old_string": "a", "new_string": blob}],
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "BINARY_BLOB_REJECTED"
+
+
 def test_openapi_lists_real_params(vault, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(vault, monkeypatch, KB_MCP_REST_API_KEY="sekret")
     doc = client.get("/api/openapi.json").json()

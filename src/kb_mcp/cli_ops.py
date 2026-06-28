@@ -141,11 +141,16 @@ def _coerce_list(value: Any, name: str) -> list[str]:
     raise OpError("BAD_TYPE", f"`{name}` must be a list, got {value!r}")
 
 
-def _coerce_json(value: Any, name: str) -> Any:
+def _coerce_json(value: Any, name: str, *, cli: bool = False) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
         except json.JSONDecodeError as e:
+            if cli:
+                # CLI convenience: a bare unquoted string for a union/json field is
+                # itself (`kb edit --value hello`), not malformed JSON. REST stays
+                # strict-JSON — this fallback only fires on the CLI surface.
+                return value
             raise OpError("BAD_JSON", f"`{name}` must be valid JSON: {e}") from None
     return value
 
@@ -163,6 +168,7 @@ def coerce(
     *,
     guarded_fields: tuple[str, ...] = (),
     tool: str = "",
+    cli: bool = False,
 ) -> dict:
     """Coerce a raw arg mapping into leaf kwargs using the `Param` specs.
 
@@ -172,6 +178,10 @@ def coerce(
     - Coerces each value by its declared type tag (works for JSON-native values
       from REST and for CLI strings alike).
     - Re-runs the base64 binary-blob guard on the declared text fields.
+
+    `cli=True` relaxes one thing only: a union/`json` field whose raw string isn't
+    valid JSON falls back to that string (so `kb edit --value hello` works without
+    `--value '"hello"'`). REST keeps `cli=False` and stays strict-JSON.
     """
     spec = {p.name: p for p in params}
     unknown = [k for k in raw if k not in spec]
@@ -185,6 +195,15 @@ def coerce(
     for fld in guarded_fields:
         if fld in raw:
             guards.guard_text_content(raw.get(fld), tool=tool, field=fld)
+    # `edit`'s batch mode carries each write payload in edits[].new_string — guard
+    # those too (the top-level guarded_fields only covers new_body/new_string),
+    # mirroring the MCP middleware so no surface lets a blob in through the nest.
+    if tool == "edit" and isinstance(raw.get("edits"), list):
+        for item in raw["edits"]:
+            if isinstance(item, dict):
+                guards.guard_text_content(
+                    item.get("new_string"), tool=tool, field="edits[].new_string"
+                )
 
     kwargs: dict[str, Any] = {}
     for name, value in raw.items():
@@ -200,7 +219,7 @@ def coerce(
         elif p.type == "dict":
             kwargs[name] = _coerce_dict(value, name)
         elif p.type == "json":
-            kwargs[name] = _coerce_json(value, name)
+            kwargs[name] = _coerce_json(value, name, cli=cli)
         else:  # "str"
             kwargs[name] = value if isinstance(value, str) else str(value)
     return kwargs
