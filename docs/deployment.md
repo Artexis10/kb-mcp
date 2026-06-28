@@ -275,6 +275,16 @@ CLIP visual search runs CLIP on **CPU when ASR is active** (whisper's cu12 cuDNN
 PATH-prepend otherwise shadows torch's cuDNN and breaks CLIP's Conv2d). Override
 with `KB_MCP_CLIP_DEVICE=cuda`/`cpu` if needed.
 
+Zero-shot **image tags** (`KB_MCP_IMAGE_TAGS`, default off) reuse that same loaded
+CLIP model — no extra dependency. When set, each extracted image is cosine-scored
+against a fixed generic tag vocabulary and the top matches are appended to its
+indexed text as a `Tags: invoice, table, screenshot` line, so a photo is findable
+by what it depicts (not just its OCR text). It is a frozen cosine measurement (no
+LLM), inherits the CLIP device logic above, and soft-fails to no tags when CLIP is
+absent. Tune with `KB_MCP_IMAGE_TAGS_TOPK` (default 5) and
+`KB_MCP_IMAGE_TAGS_THRESHOLD` (raw cosine, default 0.22); only newly-extracted
+images are tagged.
+
 Named-speaker diarization's ECAPA voice embedder (`diarization` extra) runs on
 torch and follows the same precedent: it defaults to **CPU when ASR is active**, with
 a `KB_MCP_VOICE_DEVICE=cuda`/`cpu` override. Enroll voices with

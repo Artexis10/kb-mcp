@@ -498,6 +498,9 @@ def _ocr_image(path: Path) -> ExtractResult:
     # OPTIONAL frozen-model caption (KB_MCP_VISION_CAPTION, default OFF) prepended so
     # a photo with no on-image text is still findable. Soft-fails to OCR-only.
     text, engine = _maybe_caption(text, path)
+    # OPTIONAL CLIP zero-shot tags (KB_MCP_IMAGE_TAGS, default OFF) appended so the image
+    # is findable by what it depicts ("invoice", "whiteboard"). Soft-fails to no tags.
+    text, engine = _maybe_image_tags(text, path, engine)
     return ExtractResult(text=text, media_type="image", engine=engine)
 
 
@@ -593,6 +596,36 @@ def _maybe_caption(ocr_text: str, path: Path) -> tuple[str, str]:
     text = f"{caption}\n\n{ocr_text}".strip() if ocr_text else caption
     short = _caption_model_name().rsplit("/", 1)[-1]
     return text, f"tesseract+{short}"
+
+
+# ---------------- optional: CLIP zero-shot image tags (KB_MCP_IMAGE_TAGS, default OFF) ----
+#
+# PURE-SUBSTRATE NOTE: scoring an image's CLIP embedding against a fixed text vocabulary is
+# deterministic MEASUREMENT — the same category as Tesseract OCR, CLIP visual search, and the
+# bge embedder. It reads pixels into a fixed cosine score against frozen vectors; it does NOT
+# generate language and is not a reasoning LLM (cross-image inference stays Claude's). The
+# computation + vocabulary live in `image_tags`; this seam just gates it (default-OFF) and
+# appends the tags to the indexed text. With the flag off the OCR text flows through unchanged.
+
+
+def _maybe_image_tags(ocr_text: str, path: Path, engine: str) -> tuple[str, str]:
+    """Append CLIP zero-shot tags (KB_MCP_IMAGE_TAGS, default OFF) to an image's extracted text.
+
+    Flag off, no tag clears the threshold, or CLIP soft-fails → unchanged `(ocr_text, engine)`.
+    Tags present → `<text>\\n\\nTags: a, b, c` with `+tags` appended to the engine for provenance.
+    """
+    # Check the gate BEFORE importing image_tags (which pulls in embeddings/CLIP), so the
+    # default-off path imports nothing and the output is byte-identical — mirrors _maybe_caption.
+    if not os.environ.get("KB_MCP_IMAGE_TAGS"):
+        return ocr_text, engine
+    from . import image_tags  # lazy: defers the CLIP/embeddings import until opted in
+
+    tags = image_tags.compute_tags(path)
+    line = image_tags.format_tags_line(tags)
+    if not line:
+        return ocr_text, engine
+    text = f"{ocr_text}\n\n{line}" if ocr_text else line
+    return text, f"{engine}+tags"
 
 
 def _extract_pdf(path: Path) -> ExtractResult:
