@@ -9,7 +9,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kb_mcp.__main__ import main
+
+_INSIGHT = "Knowledge Base/Notes/Insights/progressive-disclosure-without-mode-fragmentation.md"
 
 
 def _run(argv: list[str], capsys) -> tuple[int, str, str]:
@@ -92,6 +96,53 @@ def test_note_field_escape(vault: Path, capsys) -> None:
     payload = json.loads(out.strip().splitlines()[-1])
     assert payload["success"] is True
     assert "Project Alpha" in payload["data"]["path"]
+
+
+def test_edit_value_plain_string(vault: Path, capsys) -> None:
+    """`kb edit --field K --value <plain string>` works without quoting as JSON.
+
+    `value` is a genuine union (coercion tag "json"); on the CLI a bare unquoted
+    string must be taken as itself, not rejected as BAD_JSON.
+    """
+    code, out, err = _run(
+        ["edit", _INSIGHT, "--why", "set domain", "--field", "domain",
+         "--value", "retrieval", "--json"],
+        capsys,
+    )
+    assert code == 0, err
+    payload = json.loads(out.strip().splitlines()[-1])
+    assert payload["success"] is True
+    assert payload["data"]["new_value"] == "retrieval"
+    assert "domain: retrieval" in (vault / _INSIGHT).read_text(encoding="utf-8")
+
+
+def test_malformed_field_exits_2(vault: Path, capsys) -> None:
+    """A `--field` token with no `=` is a usage error → exit 2 (not exit 1)."""
+    code, _out, err = _run(
+        [
+            "note",
+            "--note-type", "insight",
+            "--title", "x",
+            "--content", "# x\n\n## Claim\n\ny\n",
+            "--field", "bogus",  # no KEY=VALUE separator
+        ],
+        capsys,
+    )
+    assert code == 2
+    assert "Error [USAGE]" in err
+    assert "KEY=VALUE" in err
+
+
+def test_tier2_op_disabled_emits_unavailable(
+    vault: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`kb <tier2-op>` with KB_MCP_DISABLE_TIER2 set names the gap, exit 2."""
+    monkeypatch.setenv("KB_MCP_DISABLE_TIER2", "1")
+    code, _out, err = _run(["query_data", "some.csv"], capsys)
+    assert code == 2
+    assert "Error [UNAVAILABLE]" in err
+    assert "tier-2 disabled" in err
+    assert "query_data" in err
 
 
 def test_missing_required_arg_exits_2(vault: Path, capsys) -> None:

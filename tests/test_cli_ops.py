@@ -120,3 +120,37 @@ def test_coerce_json_passthrough_for_union() -> None:
     assert out == {"value": {"nested": [1, 2]}}
     out2 = cli_ops.coerce(_PARAMS, {"value": "42"}, tool="edit")
     assert out2 == {"value": 42}  # JSON string parsed
+
+
+def test_coerce_json_rest_rejects_bare_string() -> None:
+    # REST (cli=False) stays strict: a bare unquoted string is NOT valid JSON.
+    with pytest.raises(cli_ops.OpError) as exc:
+        cli_ops.coerce(_PARAMS, {"value": "hello"}, tool="edit")
+    assert exc.value.code == "BAD_JSON"
+
+
+def test_coerce_json_cli_falls_back_to_raw_string() -> None:
+    # CLI (cli=True): `kb edit --value hello` — a bare string is itself, not BAD_JSON.
+    out = cli_ops.coerce(_PARAMS, {"value": "hello"}, tool="edit", cli=True)
+    assert out == {"value": "hello"}
+    # Real JSON still parses under cli=True (the fallback only fires on parse failure).
+    out2 = cli_ops.coerce(_PARAMS, {"value": "42"}, tool="edit", cli=True)
+    assert out2 == {"value": 42}
+    out3 = cli_ops.coerce(_PARAMS, {"value": '{"k": 1}'}, tool="edit", cli=True)
+    assert out3 == {"value": {"k": 1}}
+
+
+def test_coerce_guards_nested_edit_new_string() -> None:
+    # edit's batch mode hides the write payload in edits[].new_string — it must be
+    # blob-guarded too, not just the top-level new_body/new_string.
+    params = (Param("path", "str"), Param("why", "str"), Param("edits", "json"))
+    blob = "data:image/png;base64," + "A" * 40000
+    with pytest.raises(ValueError) as exc:
+        cli_ops.coerce(
+            params,
+            {"path": "x.md", "why": "y", "edits": [{"old_string": "a", "new_string": blob}]},
+            guarded_fields=("new_body", "new_string"),
+            tool="edit",
+        )
+    assert "BINARY_BLOB_REJECTED" in str(exc.value)
+    assert "edits[].new_string" in str(exc.value)

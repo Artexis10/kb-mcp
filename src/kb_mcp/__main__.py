@@ -41,6 +41,14 @@ def main(argv: list[str] | None = None) -> int:
     # `kb note …`, etc. — every command on the `cli` surface.
     if raw and raw[0] in _core_op_names():
         return _core_op_main(raw)
+    # A real tier-2 op invoked while KB_MCP_DISABLE_TIER2 is set would otherwise fall
+    # through to the serve parser and emit a confusing argparse error — name it instead.
+    if raw and not _expose_tier2() and raw[0] in _core_op_names(expose_tier2=True):
+        print(
+            f"Error [UNAVAILABLE]: operation {raw[0]!r} is unavailable (tier-2 disabled)",
+            file=sys.stderr,
+        )
+        return 2
     return _serve_main(raw)
 
 
@@ -354,11 +362,13 @@ def _expose_tier2() -> bool:
     return not os.environ.get("KB_MCP_DISABLE_TIER2")
 
 
-def _core_op_names() -> frozenset[str]:
+def _core_op_names(*, expose_tier2: bool | None = None) -> frozenset[str]:
     from . import commands as commands_module
 
+    if expose_tier2 is None:
+        expose_tier2 = _expose_tier2()
     return frozenset(
-        c.name for c in commands_module.commands_for("cli", expose_tier2=_expose_tier2())
+        c.name for c in commands_module.commands_for("cli", expose_tier2=expose_tier2)
     )
 
 
@@ -420,7 +430,9 @@ def _add_command_args(sp: argparse.ArgumentParser, cmd) -> None:
         )
 
 
-def _collect_raw_args(cmd, args: argparse.Namespace) -> dict:
+def _collect_raw_args(
+    cmd, args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> dict:
     field_escape = cmd.name in _FIELD_ESCAPE
     raw: dict = {}
     for p in cmd.params:
@@ -433,9 +445,9 @@ def _collect_raw_args(cmd, args: argparse.Namespace) -> dict:
         for item in getattr(args, "field", None) or []:
             key, sep, value = item.partition("=")
             if not sep:
-                raise SystemExit(
-                    f"Error [USAGE]: --field expects KEY=VALUE, got {item!r}"
-                )
+                # Route through argparse's error path → exit 2, consistent with
+                # every other usage error (a bare `raise SystemExit(str)` is exit 1).
+                parser.error(f"--field expects KEY=VALUE, got {item!r}")
             raw[key.strip()] = value
     return raw
 
@@ -485,9 +497,9 @@ def _core_op_main(argv: list[str]) -> int:
 
     try:
         vault_root = resolve_vault()
-        raw = _collect_raw_args(cmd, args)
+        raw = _collect_raw_args(cmd, args, parser)
         kwargs = cli_ops.coerce(
-            cmd.params, raw, guarded_fields=cmd.guarded_fields, tool=cmd.name
+            cmd.params, raw, guarded_fields=cmd.guarded_fields, tool=cmd.name, cli=True
         )
         if cmd.needs_schema:
             injected = (vault_root, schema_module.load_source_schema(vault_root))
