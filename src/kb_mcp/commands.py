@@ -32,6 +32,7 @@ from . import attention as attention_module
 from . import audit as audit_module
 from . import audit_fix as audit_fix_module
 from . import compile_proposal as compile_proposal_module
+from . import context_pack as context_pack_module
 from . import corpus_aware as corpus_aware_module
 from . import create_directory as create_directory_module
 from . import create_file as create_file_module
@@ -217,7 +218,8 @@ def op_find(
     rerank: bool = False,
     prefer_compiled: bool = True,
     prefer_active: bool = True,
-) -> list[dict]:
+    pack: bool = False,
+) -> list[dict] | dict:
     """Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within.
 
     Args:
@@ -286,9 +288,23 @@ def op_find(
             pointer) so you can see it's superseded. Set false to rank a
             superseded page on its content alone (e.g. "what did I used to
             think about X").
+        pack: When true (off by default), ALSO assemble a reasoning-ready
+            context pack from the top hits and change the return to
+            {"hits": [...], "pack": {...}} (with pack off, the return is the
+            usual hit list, unchanged). The pack is PURE MEASUREMENT over the
+            notes you already wrote — no server-side reasoning: each top note's
+            structurally-extracted key claims (lede + headline-section lines +
+            heading outline), the 1-hop wikilink neighbourhood of those notes
+            ranked by co-citation, and the contradictions among them (recorded
+            supersession edges + proximity "tension" pairs in the embedding
+            band, surfaced for you to judge — proximity, not polarity). Lets you
+            reason over the matches in one shot instead of fanning out `get`
+            calls. Bounded with explicit `truncation`; the tension part needs
+            the embedding sidecar and reports `embeddings_available`.
 
     Returns:
-        List of {path, type, scope, title, updated, excerpt[, outside_kb]
+        With pack off (default): a list of {path, type, scope, title, updated,
+        excerpt[, outside_kb]
         [, status][, superseded_by][, signals]}. `outside_kb: true` is
         present only on hits the "kb" auto-widen pulled from beyond
         Knowledge Base/ (the `path` also shows the sibling folder).
@@ -303,6 +319,9 @@ def op_find(
         number of top-N seeds whose body wikilinks to this hit —
         independent of graph_hop, which only fires for graph-only
         results.
+        With pack on: {"hits": [...the same list...], "pack": {packed_paths,
+        claims, neighborhood, contradictions: {superseded, tension},
+        embeddings_available, truncation}}.
     """
     hits = find_module.find(
         vault_root,
@@ -329,7 +348,13 @@ def op_find(
         limit=limit, rerank=rerank, prefer_compiled=prefer_compiled,
         graph=graph, hits=hits,
     )
-    return [h.as_dict() for h in hits]
+    hit_dicts = [h.as_dict() for h in hits]
+    if not pack:
+        return hit_dicts
+    return {
+        "hits": hit_dicts,
+        "pack": context_pack_module.assemble_pack(vault_root, hits),
+    }
 
 
 def op_suggest_links(
