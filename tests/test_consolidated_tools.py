@@ -207,3 +207,24 @@ def test_note_project_description_is_dynamic_and_open(vault: Path, monkeypatch) 
     # built-in set, which includes these), not a hand-maintained string.
     assert "project-alpha" in project_desc
     assert "personal" in project_desc
+
+
+def test_attention_tool_composes_review_surface(vault: Path, monkeypatch) -> None:
+    """The `attention` MCP tool returns one ranked review surface, read-only, and
+    honors the `categories` subset filter — driven end-to-end through call_tool."""
+    mcp = _build(monkeypatch)
+    out = _call(mcp, "attention", {"limit": 10})
+
+    # Shape contract (mirrors AttentionReport.as_dict()).
+    assert {"items", "summary", "shown", "total", "truncated", "upstream_truncated"} <= set(out)
+    assert isinstance(out["items"], list)
+    assert out["shown"] == len(out["items"]) <= 10
+    for item in out["items"]:
+        assert {"path", "score", "severity", "categories", "reasons", "proposed_fix"} <= set(item)
+        assert item["categories"], "every item must name at least one queue"
+        assert "review only" in item["proposed_fix"].lower()
+
+    # Category subset is honored: only the requested queue can appear.
+    only_sources = _call(mcp, "attention", {"categories": ["unprocessed_source"]})
+    surfaced = {c for it in only_sources["items"] for c in it["categories"]}
+    assert surfaced <= {"unprocessed_source"}
