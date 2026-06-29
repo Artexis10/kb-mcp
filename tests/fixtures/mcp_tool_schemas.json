@@ -608,6 +608,11 @@
           "default": true,
           "type": "boolean",
           "description": "When true (default), soft-demotes `status:\nsuperseded` pages so a replaced conclusion can't outrank the\npage that superseded it. The tombstone stays findable and its\nhit still carries `status` + `superseded_by` (the forward\npointer) so you can see it's superseded. Set false to rank a\nsuperseded page on its content alone (e.g. \"what did I used to\nthink about X\")."
+        },
+        "pack": {
+          "default": false,
+          "type": "boolean",
+          "description": "When true (off by default), ALSO assemble a reasoning-ready\ncontext pack from the top hits and change the return to\n{\"hits\": [...], \"pack\": {...}} (with pack off, the return is the\nusual hit list, unchanged). The pack is PURE MEASUREMENT over the\nnotes you already wrote — no server-side reasoning: each top note's\nstructurally-extracted key claims (lede + headline-section lines +\nheading outline), the 1-hop wikilink neighbourhood of those notes\nranked by co-citation, and the contradictions among them (recorded\nsupersession edges + proximity \"tension\" pairs in the embedding\nband, surfaced for you to judge — proximity, not polarity). Lets you\nreason over the matches in one shot instead of fanning out `get`\ncalls. Bounded with explicit `truncation`; the tension part needs\nthe embedding sidecar and reports `embeddings_available`."
         }
       },
       "type": "object"
