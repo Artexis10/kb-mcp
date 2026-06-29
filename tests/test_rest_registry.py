@@ -161,6 +161,27 @@ def test_openapi_lists_real_params(vault, monkeypatch: pytest.MonkeyPatch) -> No
     assert "path" in get_schema.get("required", [])
 
 
+def test_attention_route_and_openapi_params(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`attention` is exposed on REST from its single registry entry, with exactly
+    `categories` + `limit` as documented parameters."""
+    client = _client(vault, monkeypatch, KB_MCP_REST_API_KEY="sekret")
+    r = client.post("/api/attention", json={}, headers=_auth())
+    assert r.status_code != 404, f"/api/attention missing: {r.status_code} {r.text}"
+    body = r.json()
+    assert body["success"] is True
+    assert {"items", "summary", "shown", "total", "truncated", "upstream_truncated"} <= set(
+        body["data"]
+    )
+    doc = client.get("/api/openapi.json").json()
+    assert "/api/attention" in doc["paths"]
+    schema = doc["paths"]["/api/attention"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert set(schema["properties"]) == {"categories", "limit"}
+    assert schema["properties"]["limit"]["type"] == "integer"
+    assert schema["properties"]["categories"]["type"] == "array"
+
+
 def test_openapi_has_no_hand_list(vault, monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAPI is generated from the registry — tier-2 ops appear too (no frozen list)."""
     client = _client(vault, monkeypatch, KB_MCP_REST_API_KEY="sekret")

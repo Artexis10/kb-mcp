@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import add as add_module
 from . import append_to_file as append_to_file_module
+from . import attention as attention_module
 from . import audit as audit_module
 from . import audit_fix as audit_fix_module
 from . import compile_proposal as compile_proposal_module
@@ -506,6 +507,46 @@ def op_audit(
          summary: {category: count}}.
     """
     report = audit_module.audit(vault_root, categories=categories)
+    return report.as_dict()
+
+
+def op_attention(
+    vault_root: Path,categories: list[str] | None = None, limit: int = 25) -> dict:
+    """Your review queue: the one ranked list of what in the Knowledge Base needs your attention today. Read-only.
+
+    Composes the three measurement-only epistemic queues into a single list,
+    ranked by Reciprocal Rank Fusion over each queue's own ordering — a note
+    flagged by more than one queue rises to the top:
+    - `stale_review`: active conclusions that are old AND rarely surfaced in
+      `find` AND low inbound-degree (possibly stale — still true?).
+    - `corpus_contradictions`: pairs of active conclusions whose embeddings sit
+      close enough to restate, refine, or contradict (do they conflict?).
+    - `unprocessed_source`: sources captured but never compiled (nothing
+      distilled from them yet).
+
+    Each item carries its reason(s), the related note(s) for a contradiction
+    pair, and severity. Surfaced for REVIEW only: the ranking is a deterministic
+    measurement, not a judgment that anything is wrong — you decide keep /
+    `replace` (supersede) / `reconcile` / `propose_compilation` / archive.
+    Nothing is auto-acted; `find` ordering is unchanged.
+
+    Front door for daily review. Use `audit` instead for the full lint/health
+    report (broken wikilinks, frontmatter compliance, index drift, embedding
+    drift, etc.).
+
+    Args:
+        categories: Optional subset of {corpus_contradictions, stale_review,
+            unprocessed_source}. Omit to include all three.
+        limit: Max items to surface (default 25; 0 or negative = uncapped,
+            surface all). Lower-priority items beyond the cap are summarized in
+            a "N more not shown" note, never dropped silently.
+
+    Returns:
+        {items: [{path, score, severity, categories, reasons: [{category, rank,
+         detail, related_paths?, meta}], proposed_fix}], summary: {category:
+         count}, shown, total, truncated, upstream_truncated, note}.
+    """
+    report = attention_module.attention(vault_root, categories=categories, limit=limit)
     return report.as_dict()
 
 
@@ -1872,6 +1913,7 @@ _SPEC: tuple[tuple, ...] = (
     ("suggest_links", op_suggest_links, 1, False, False, None, _MCRC),
     ("add", op_add, 1, True, True, None, _MCRC),
     ("audit", op_audit, 1, False, False, None, _MCRC),
+    ("attention", op_attention, 1, False, False, None, _MCRC),
     ("audit_fix", op_audit_fix, 1, True, False, None, _MCRC),
     ("reconcile", op_reconcile, 1, True, False, None, _MCRC),
     ("provenance_report", op_provenance_report, 1, False, False, None, _MCRC),

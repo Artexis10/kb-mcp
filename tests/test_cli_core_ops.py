@@ -52,6 +52,23 @@ def test_get_reads_a_page(vault: Path, capsys) -> None:
     assert payload["data"]["frontmatter"]["type"] == "insight"
 
 
+def test_attention_runs(vault: Path, capsys) -> None:
+    """`kb attention` is the registry-generated CLI surface of the review queue."""
+    code, out, _ = _run(["attention", "--limit", "5", "--json"], capsys)
+    assert code == 0
+    payload = json.loads(out.strip().splitlines()[-1])
+    assert payload["success"] is True
+    data = payload["data"]
+    assert {"items", "summary", "shown", "total", "truncated", "upstream_truncated"} <= set(data)
+    assert data["shown"] == len(data["items"]) <= 5
+    # category subset is accepted on the CLI too (list[str] via repeated/append flag)
+    code2, out2, _ = _run(["attention", "--categories", "stale_review", "--json"], capsys)
+    assert code2 == 0
+    data2 = json.loads(out2.strip().splitlines()[-1])["data"]
+    surfaced = {c for it in data2["items"] for c in it["categories"]}
+    assert surfaced <= {"stale_review"}
+
+
 def test_audit_runs(vault: Path, capsys) -> None:
     code, out, _ = _run(["audit", "--json"], capsys)
     assert code == 0
