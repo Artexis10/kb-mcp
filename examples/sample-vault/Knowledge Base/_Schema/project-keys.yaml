@@ -1,0 +1,7 @@
+projects:
+  sample:
+    name: Sample
+    category: example
+  personal:
+    name: Personal
+    category: cross-cutting

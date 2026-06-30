@@ -42,6 +42,7 @@ no OAuth, ~20 minutes**:
 ```bash
 git clone <repo-url> kb-mcp && cd kb-mcp
 uv sync                         # lean: keyword/BM25 search, no heavy deps
+uv run python scripts/smoke-sample-vault.py
 uv run python -m kb_mcp init --vault "/path/to/your/Obsidian"
 uv run python -m kb_mcp doctor --vault "/path/to/your/Obsidian"
 claude mcp add kb-mcp --env KB_MCP_VAULT_PATH="/path/to/your/Obsidian" \
@@ -52,7 +53,9 @@ uv run python -m kb_mcp install-skill   # the "brain" — don't skip this
 
 **[SETUP-LOCAL.md](SETUP-LOCAL.md)** walks the local path end to end (vault
 bootstrap, hybrid-vs-lean choice, the skill, and the optional auto-capture hooks).
-For remote / mobile access, see **[docs/deployment.md](docs/deployment.md)**.
+For remote / mobile access, start with the
+**[remote checklist](docs/remote-checklist.md)**, then use
+**[docs/deployment.md](docs/deployment.md)** for the full walkthrough.
 
 ## Tools
 
@@ -208,7 +211,10 @@ extraction).
 `pip install -e .` remains supported if you manage your own virtual environment,
 but the documented path uses `uv` so the lockfile and the configured PyTorch index
 are honored. Check a machine with `uv run python -m kb_mcp doctor --profile lean`
-or `--profile hybrid|media|remote` before wiring a client.
+or `--profile hybrid|media|remote` before wiring a client. For a media host, run
+`uv run python -m kb_mcp doctor --profile media` after installing the extra and
+Tesseract so missing Python/system dependencies are reported before uploads rely
+on extraction.
 
 ## Remote access (optional)
 
@@ -219,8 +225,9 @@ connector URL from Anthropic's cloud (not from your phone), so the endpoint must
 be publicly reachable — a **Cloudflare Tunnel** (domain you own) or **Tailscale
 Funnel** (free `*.ts.net` host) provides it.
 
-Full setup — OAuth app, tunnel, the service installers (launchd / systemd /
-NSSM), multi-host deployment, and troubleshooting — is in
+Use **[docs/remote-checklist.md](docs/remote-checklist.md)** as the bring-up
+checklist. Full setup — OAuth app, tunnel, the service installers (launchd /
+systemd / NSSM), multi-host deployment, and troubleshooting — is in
 **[docs/deployment.md](docs/deployment.md)**. Replace `<your-host>` /
 `example.com` throughout with your own hostname.
 
@@ -295,3 +302,9 @@ and `pyannote/segmentation-3.0`. Then `KB_MCP_DIARIZE=1`, enroll yourself
 ## License
 
 AGPL-3.0-or-later — see [LICENSE](LICENSE).
+
+## Releases
+
+Versioning follows the lightweight SemVer policy in
+**[docs/release.md](docs/release.md)**. The source of truth is
+`pyproject.toml`'s `[project].version`; release tags use `vX.Y.Z`.

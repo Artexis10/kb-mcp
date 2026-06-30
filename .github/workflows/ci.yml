@@ -26,6 +26,32 @@ jobs:
           KB_MCP_DISABLE_EMBEDDINGS: "1"
           KB_MCP_DISABLE_MEDIA_EXTRACTION: "1"
         run: uv run --python ${{ matrix.python-version }} python -m pytest -q
+      - name: Sample vault smoke
+        run: uv run --python ${{ matrix.python-version }} python scripts/smoke-sample-vault.py
+
+  specs:
+    name: OpenSpec validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate specs
+        run: npm exec --yes @fission-ai/openspec -- validate --specs --strict
+
+  build:
+    name: package build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Build package
+        run: uv build
 
   lint:
     name: ruff (advisory)

@@ -21,10 +21,10 @@ dependencies = [
 ]
 
 # Hybrid semantic search (local vector embeddings). Optional so a lean install
-# — `pip install -e .` — works in keyword/BM25 mode (KB_MCP_DISABLE_EMBEDDINGS=1)
-# without the ~1-2 GB torch/CUDA download. The code soft-falls back to BM25 when
-# these aren't importable. Full hybrid (a full install):
-#   pip install -e ".[embeddings]"
+# — `uv sync` — works in keyword/BM25 mode (KB_MCP_DISABLE_EMBEDDINGS=1) without
+# the ~1-2 GB torch/CUDA download. The code soft-falls back to BM25 when these
+# aren't importable. Full hybrid:
+#   uv sync --extra embeddings
 [project.optional-dependencies]
 embeddings = [
     "sentence-transformers>=2.7",

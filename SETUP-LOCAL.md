@@ -55,6 +55,16 @@ If you already manage Python environments yourself, `pip install -e .` still
 works as a fallback; the `uv` path is preferred because it honors `uv.lock` and
 the repo's configured PyTorch wheel source.
 
+Before touching your own vault, you can verify the repo against the public sample
+vault:
+
+```bash
+uv run python scripts/smoke-sample-vault.py
+```
+
+That read-only smoke runs the path a new install depends on: `doctor`, keyword
+`find`, `get`, and `audit`.
+
 ---
 
 ## 2. Bootstrap your Knowledge Base

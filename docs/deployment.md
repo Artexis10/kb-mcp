@@ -7,6 +7,7 @@ stdio, no cloud) is in [../SETUP-LOCAL.md](../SETUP-LOCAL.md); start there if yo
 don't need mobile access.
 
 Throughout, replace `<your-host>` / `example.com` with your own hostname.
+For the short bring-up list, use [remote-checklist.md](remote-checklist.md).
 
 ## Architecture
 
@@ -154,6 +155,9 @@ vault solely from this line in `.env` at startup.
 ## 5. Sanity-test locally
 
 ```powershell
+# Configuration profile check
+uv run python -m kb_mcp doctor --profile remote
+
 # stdio (no auth needed)
 uv run python -m kb_mcp --transport stdio
 # Ctrl-C to stop
@@ -285,10 +289,9 @@ absent. Tune with `KB_MCP_IMAGE_TAGS_TOPK` (default 5) and
 `KB_MCP_IMAGE_TAGS_THRESHOLD` (raw cosine, default 0.22); only newly-extracted
 images are tagged.
 
-**Install:** `uv sync --extra media --extra diarization`, then **`uv pip uninstall torchcodec`**
-— the extra pulls `torchcodec` transitively, but its native lib won't load against the torch-cu132
-build and importing it breaks `sentence-transformers` (the embedding stack); it's unused here
-(audio decode goes through faster-whisper's PyAV path), so it must be removed.
+**Install:** `uv sync --extra media --extra diarization`, then build the isolated
+sidecar with `pwsh -File scripts/setup-diarizer.ps1 -Prewarm` on Windows or
+`uv sync --directory sidecar/diarizer` on Linux/macOS.
 
 Named-speaker diarization's ECAPA voice embedder (`diarization` extra) runs on
 torch and follows the same precedent: it defaults to **CPU when ASR is active**, with
