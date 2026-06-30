@@ -236,7 +236,12 @@ class SingleUserGitHubVerifier(GitHubTokenVerifier):
     def __init__(self, *, allowed_login: str, **kwargs):
         super().__init__(**kwargs)
         self._allowed_login = allowed_login.lower()
-        self._cache: dict[str, tuple[float, AccessToken]] = {}
+        # NOTE: this MUST NOT be named ``_cache`` — the parent GitHubTokenVerifier
+        # owns ``self._cache`` (a fastmcp ``TokenCache``) and unpacks its
+        # ``.get()`` as a 2-tuple inside ``super().verify_token``. Shadowing it
+        # with a plain dict made that line raise "cannot unpack non-iterable
+        # NoneType object", failing the OAuth token-swap → 401 on every request.
+        self._login_cache: dict[str, tuple[float, AccessToken]] = {}
 
     def _ttl(self) -> float:
         raw = os.environ.get("KB_MCP_AUTH_CACHE_TTL")
@@ -251,12 +256,12 @@ class SingleUserGitHubVerifier(GitHubTokenVerifier):
         ttl = self._ttl()
         key = hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
         if ttl > 0 and key:
-            hit = self._cache.get(key)
+            hit = self._login_cache.get(key)
             if hit is not None:
                 ts, cached = hit
                 if time.monotonic() - ts < ttl:
                     return cached
-                del self._cache[key]  # expired
+                del self._login_cache[key]  # expired
 
         access = await super().verify_token(token)
         if access is None:
@@ -274,12 +279,12 @@ class SingleUserGitHubVerifier(GitHubTokenVerifier):
 
         if ttl > 0 and key:
             now = time.monotonic()
-            if len(self._cache) >= self._MAX_ENTRIES:
+            if len(self._login_cache) >= self._MAX_ENTRIES:
                 # Drop expired entries before inserting; cheap, the cache is tiny.
-                self._cache = {
-                    k: v for k, v in self._cache.items() if now - v[0] < ttl
+                self._login_cache = {
+                    k: v for k, v in self._login_cache.items() if now - v[0] < ttl
                 }
-            self._cache[key] = (now, access)
+            self._login_cache[key] = (now, access)
         return access
 
 
