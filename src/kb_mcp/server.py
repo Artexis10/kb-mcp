@@ -861,7 +861,8 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
         mcp.tool(
             commands_module.bind_vault(
                 _cmd.leaf, *_injected, name=_cmd.name, description=_cmd.doc
-            )
+            ),
+            annotations=_cmd.mcp_annotations,
         )
 
     # `note` stays a hand-registered MCP exception: its description carries the live
@@ -872,10 +873,15 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             vault_root,
             name="note",
             description=commands_module.note_description(project_keys_hint),
-        )
+        ),
+        annotations=commands_module.mcp_tool_annotations("note", read_only=False),
     )
 
-    @mcp.tool
+    @mcp.tool(
+        annotations=commands_module.mcp_tool_annotations(
+            "mint_upload_token", read_only=False
+        )
+    )
     def mint_upload_token() -> dict:
         """Mint a short-lived bearer token for the HTTP `/upload` endpoint.
 
@@ -911,7 +917,11 @@ out.textContent=r.status+' '+await r.text();}}catch(err){{out.textContent='Error
             upload_token, base_url, large_base_url=large_upload_base
         )
 
-    @mcp.tool
+    @mcp.tool(
+        annotations=commands_module.mcp_tool_annotations(
+            "mint_download_token", read_only=True
+        )
+    )
     def mint_download_token() -> dict:
         """Mint a short-lived bearer token for the HTTP `/download` endpoint.
 

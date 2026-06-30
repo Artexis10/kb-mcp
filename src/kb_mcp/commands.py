@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from mcp.types import ToolAnnotations
+
 from . import add as add_module
 from . import append_to_file as append_to_file_module
 from . import attention as attention_module
@@ -79,6 +81,33 @@ GUARDED_WRITE_FIELDS: dict[str, tuple[str, ...]] = {
     "preserve": ("content",),
 }
 
+# Write ops whose mutation OVERWRITES or REMOVES existing vault content, as opposed
+# to purely additive writes (add / note / create_file / append_to_file / link /
+# preserve / recover_from_trash / reconcile). Drives the MCP `destructiveHint` so a
+# cautious client (e.g. ChatGPT) doesn't badge an append as destructive. Only
+# consulted for non-read-only tools.
+DESTRUCTIVE_OPS: frozenset[str] = frozenset(
+    {"edit", "replace", "delete", "move_file", "audit_fix"}
+)
+
+
+def mcp_tool_annotations(name: str, *, read_only: bool) -> ToolAnnotations:
+    """MCP behaviour hints for one tool — what cautious clients render as badges.
+
+    kb-mcp operates on a CLOSED local vault and never reaches external systems, so
+    `openWorldHint` is always False. `readOnlyHint` comes from the command's
+    `cli_writes` flag (search/get/list ops are read-only). `destructiveHint` is only
+    meaningful for writes: additive writes are non-destructive; only `DESTRUCTIVE_OPS`
+    overwrite or remove. Absent these hints, clients assume the worst (read-only
+    `find` shown as WRITE / OPEN-WORLD / DESTRUCTIVE).
+    """
+    return ToolAnnotations(
+        title=name,
+        readOnlyHint=read_only,
+        destructiveHint=False if read_only else (name in DESTRUCTIVE_OPS),
+        openWorldHint=False,
+    )
+
 
 # --------------------------------------------------------------------------- #
 # Registry dataclasses
@@ -121,6 +150,17 @@ class Command:
     def guarded_fields(self) -> tuple[str, ...]:
         """Text fields whose value must not be a base64 binary blob."""
         return GUARDED_WRITE_FIELDS.get(self.name, ())
+
+    @property
+    def read_only(self) -> bool:
+        """True for non-mutating ops (search / get / list) — the inverse of
+        `cli_writes`, surfaced to the MCP `readOnlyHint`."""
+        return not self.cli_writes
+
+    @property
+    def mcp_annotations(self) -> ToolAnnotations:
+        """MCP behaviour hints for this command's generated tool."""
+        return mcp_tool_annotations(self.name, read_only=self.read_only)
 
 
 # --------------------------------------------------------------------------- #
