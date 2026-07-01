@@ -1,6 +1,6 @@
 [project]
 name = "kb-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted MCP server exposing an Obsidian/markdown knowledge base to any MCP client (Claude, Cursor, ...), with multimodal OCR/ASR/CLIP search"
 readme = "README.md"
 requires-python = ">=3.11"
