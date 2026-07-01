@@ -119,7 +119,7 @@ def test_hit_carries_scope_for_different_types(vault: Path) -> None:
     assert prod_hits and prod_hits[0].scope == "reels"
 
     # entity → scope = entity_type
-    entity_hits = find_module.find(vault, query="Karpathy", types=["entity"])
+    entity_hits = find_module.find(vault, query="Lovelace", types=["entity"])
     assert entity_hits and entity_hits[0].scope == "person"
 
 
@@ -332,7 +332,8 @@ def test_cache_invalidation_on_mtime_change(vault: Path) -> None:
     # Touch the file with a new marker; bump mtime
     text = p.read_text(encoding="utf-8")
     p.write_text(text + f"\n{sentinel}\n", encoding="utf-8")
-    import os, time
+    import os
+    import time
     # Force a different mtime in case the resolution is coarse
     future = time.time() + 1
     os.utime(p, (future, future))
@@ -382,20 +383,20 @@ def test_passes_filters_file_types_include_and_exclude() -> None:
 
 def test_page_speakers_accessor() -> None:
     assert _mk_page({}).speakers == []
-    assert _mk_page({"speakers": ["Hugo", "Speaker B"]}).speakers == ["Hugo", "Speaker B"]
-    assert _mk_page({"speakers": "Hugo"}).speakers == []  # non-list frontmatter → empty (defensive)
+    assert _mk_page({"speakers": ["ALICE", "Speaker B"]}).speakers == ["ALICE", "Speaker B"]
+    assert _mk_page({"speakers": "ALICE"}).speakers == []  # non-list frontmatter → empty (defensive)
 
 
 def test_passes_filters_speakers_match_and_miss() -> None:
-    diarized = _mk_page({"media_type": "audio", "speakers": ["Hugo", "Speaker B"]})
-    other = _mk_page({"media_type": "audio", "speakers": ["Kim"]})
+    diarized = _mk_page({"media_type": "audio", "speakers": ["ALICE", "Speaker B"]})
+    other = _mk_page({"media_type": "audio", "speakers": ["BOB"]})
     plain = _mk_page({"type": "insight"})
     # case-insensitive match on any listed speaker
-    assert find_module._passes_filters(diarized, types=None, projects=None, tags=None, speakers=["hugo"])
+    assert find_module._passes_filters(diarized, types=None, projects=None, tags=None, speakers=["ALICE"])
     # a recording without that speaker is dropped
-    assert not find_module._passes_filters(other, types=None, projects=None, tags=None, speakers=["Hugo"])
+    assert not find_module._passes_filters(other, types=None, projects=None, tags=None, speakers=["ALICE"])
     # a page with no speakers never matches a speaker filter
-    assert not find_module._passes_filters(plain, types=None, projects=None, tags=None, speakers=["Hugo"])
+    assert not find_module._passes_filters(plain, types=None, projects=None, tags=None, speakers=["ALICE"])
     # no speaker filter → speakers ignored (default lets everything through)
     assert find_module._passes_filters(plain, types=None, projects=None, tags=None)
 
@@ -404,8 +405,8 @@ def test_find_speaker_filter_integration(vault: Path) -> None:
     note = vault / "Knowledge Base" / "Sources" / "Other" / "meeting-xyz.md"
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text(
-        "---\ntype: source\nmedia_type: audio\nspeakers: [Hugo, Speaker B]\n---\n\n[Hugo]: thyroid talk\n",
+        "---\ntype: source\nmedia_type: audio\nspeakers: [ALICE, Speaker B]\n---\n\n[ALICE]: thyroid talk\n",
         encoding="utf-8",
     )
-    assert any("meeting-xyz" in h.path for h in find_module.find(vault, query="", speakers=["Hugo"]))
+    assert any("meeting-xyz" in h.path for h in find_module.find(vault, query="", speakers=["ALICE"]))
     assert not any("meeting-xyz" in h.path for h in find_module.find(vault, query="", speakers=["Nobody"]))

@@ -139,7 +139,7 @@ def _fallback_registry() -> ProjectRegistry:
 
 
 def _title_case_slug(key: str) -> str:
-    """Auto-derive a folder name from a slug key (`book-club` → `Book Club`)."""
+    """Auto-derive a folder name from a slug key (`project-alpha` → `Project Alpha`)."""
     return " ".join(part.capitalize() for part in key.split("-"))
 
 

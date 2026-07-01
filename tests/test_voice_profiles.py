@@ -29,33 +29,33 @@ def test_missing_and_corrupt_store_reads_empty(tmp_path):
 
 def test_save_list_remove_round_trip(tmp_path):
     path = tmp_path / ".voice_profiles.json"
-    vp.save_profile(path, "Hugo", np.array([1.0, 0.0, 0.0]), is_self=True)
+    vp.save_profile(path, "ALICE", np.array([1.0, 0.0, 0.0]), is_self=True)
     listed = vp.list_profiles(path)
     assert len(listed) == 1
-    assert listed[0]["name"] == "Hugo"
+    assert listed[0]["name"] == "ALICE"
     assert listed[0]["is_self"] is True
     assert listed[0]["samples"] == 1
 
     profiles = vp.load_profiles(path)
-    assert "Hugo" in profiles
-    assert profiles["Hugo"].name == "Hugo"
-    assert profiles["Hugo"].centroid.shape == (3,)
+    assert "ALICE" in profiles
+    assert profiles["ALICE"].name == "ALICE"
+    assert profiles["ALICE"].centroid.shape == (3,)
 
-    assert vp.remove_profile(path, "Hugo") is True
+    assert vp.remove_profile(path, "ALICE") is True
     assert vp.list_profiles(path) == []
-    assert vp.remove_profile(path, "Hugo") is False  # already gone
+    assert vp.remove_profile(path, "ALICE") is False  # already gone
 
 
 def test_multi_sample_running_average(tmp_path):
     path = tmp_path / ".voice_profiles.json"
-    vp.save_profile(path, "Hugo", np.array([0.0, 0.0, 0.0]))
-    rec = vp.save_profile(path, "Hugo", np.array([3.0, 6.0, 9.0]))
+    vp.save_profile(path, "ALICE", np.array([0.0, 0.0, 0.0]))
+    rec = vp.save_profile(path, "ALICE", np.array([3.0, 6.0, 9.0]))
     # running average of [0,0,0] and [3,6,9] over 2 samples → [1.5, 3, 4.5]
     assert rec["samples"] == 2
     np.testing.assert_allclose(rec["centroid"], [1.5, 3.0, 4.5])
     # is_self sticks once set, even if a later sample omits it
-    vp.save_profile(path, "Hugo", np.array([0.0, 0.0, 0.0]), is_self=True)
-    rec2 = vp.save_profile(path, "Hugo", np.array([0.0, 0.0, 0.0]))
+    vp.save_profile(path, "ALICE", np.array([0.0, 0.0, 0.0]), is_self=True)
+    rec2 = vp.save_profile(path, "ALICE", np.array([0.0, 0.0, 0.0]))
     assert rec2["is_self"] is True
     assert rec2["samples"] == 4
 

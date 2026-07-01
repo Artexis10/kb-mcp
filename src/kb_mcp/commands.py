@@ -545,7 +545,7 @@ def op_audit(
     - `tag_inconsistency`: case/separator variants of the same tag
       (`warning_letter_incident` vs `warning-letter-incident` vs
       `Warning-Letter-Incident`). Mechanical drift only; semantic
-      near-duplicates like `metabolism` vs `metabolic` aren't flagged.
+      near-duplicates like `workflow` vs `workflows` aren't flagged.
     - `frontmatter_compliance`: per-page-type required-field gaps,
       a `tenant:` set without the expected project, patterns using singular
       `project:` instead of plural `projects:`.
@@ -1228,12 +1228,12 @@ def op_link(
 
     Entities are the typed nodes of the KB graph — people, concepts,
     libraries, decisions. Name them after the thing they are (Title Case,
-    not slugified): `Andrej Karpathy`, `Agentic RAG`, `pgvector`.
+    not slugified): `Ada Lovelace`, `Agentic RAG`, `pgvector`.
 
     Four entity types with conditional frontmatter:
     - `person`   → Entities/People/. Optional: `affiliation`, `relationship`.
     - `concept`  → Entities/Concepts/. Optional: `domain` (e.g.
-      "retrieval", "metabolism", "infrastructure").
+      "retrieval", "workflow", "infrastructure").
     - `library`  → Entities/Libraries/. Optional: `language`, `repo`,
       `license`, `used_in` (list of projects).
     - `decision` → Entities/Decisions/. Optional: `decided` (YYYY-MM-DD),
@@ -1312,7 +1312,7 @@ def op_preserve(
     Sync. The bytes never pass through the model.
 
     Args:
-        scope: Incident or domain key (e.g. "Yolo", "Mother Cancer").
+        scope: Incident or domain key (e.g. "project-alpha", "incident-2026-04").
             Creates the subfolder if it doesn't exist.
         category: Sub-category within scope (e.g. "letters", "labs",
             "court-docs"). Creates the subfolder if it doesn't exist.
@@ -1393,7 +1393,7 @@ def op_note(
       `hypothesis`, `n` (default 1), `concluded`.
       → `Notes/Experiments/<domain>/YYYY-MM-<slug>.md`
     - `production-log`: creative artifact log. `medium` REQUIRED (e.g.
-      "Reels", "Episodes"). Optional `recorded`, `published`, `host`,
+      "Posts", "Articles"). Optional `recorded`, `published`, `host`,
       `editor`, `projects`. Status enum is richer: {planned, recorded,
       edited, published, reflected, dropped, archived}; defaults to
       `planned`.
@@ -1436,7 +1436,7 @@ def op_note(
         hypothesis: experiment only. One-line claim being tested.
         n: experiment only. Sample size. Defaults to 1 (n-of-1).
         concluded: experiment only. YYYY-MM-DD when it ended (absent while ongoing).
-        medium: production-log only. Subfolder, e.g. "Reels", "Episodes".
+        medium: production-log only. Subfolder, e.g. "Posts", "Articles".
         recorded: production-log only. YYYY-MM-DD of recording session.
         published: production-log only. YYYY-MM-DD of publication.
         host: production-log only. Creator/talent name.

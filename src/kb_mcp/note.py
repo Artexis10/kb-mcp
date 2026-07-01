@@ -641,7 +641,7 @@ def _domain_folder(domain: str) -> str:
 
 
 def _medium_folder(medium: str) -> str:
-    """Title-case medium per fixture convention (Reels, Episodes, etc.)."""
+    """Title-case medium per fixture convention (Posts, Articles, etc.)."""
     safe = re.sub(r"[^a-zA-Z0-9-]", "", medium.strip())
     return safe.title() if safe else "Misc"
 

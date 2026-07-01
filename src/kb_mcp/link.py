@@ -7,7 +7,7 @@ Four entity types per page-types.md:
 - decision → Entities/Decisions/<Name>.md
 
 Name is **Title Case**, not slugified — entities are named after the thing
-they are (e.g., `Andrej Karpathy.md`, `Agentic RAG.md`, `pgvector.md`).
+they are (e.g., `Ada Lovelace.md`, `Agentic RAG.md`, `pgvector.md`).
 
 v1 is create-only. If the entity file already exists, this raises
 `ENTITY_EXISTS` — use `replace` to supersede an existing entity.
@@ -34,7 +34,6 @@ from .vault import (
     normalize_body_wikilinks,
     normalize_wikilink,
 )
-
 
 log = logging.getLogger(__name__)
 

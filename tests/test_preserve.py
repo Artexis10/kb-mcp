@@ -10,7 +10,6 @@ import pytest
 
 from kb_mcp import preserve as preserve_module
 
-
 TODAY = dt.date(2026, 5, 25)
 
 
@@ -64,7 +63,7 @@ def test_preserve_binary_artifact_decodes_base64(vault: Path) -> None:
     payload = b"\x89PNG\r\n\x1a\nfakepng"
     result = preserve_module.preserve(
         vault,
-        scope="Mother Cancer",
+        scope="Private Family Case",
         category="scans",
         filename="2026-04-15-mri.png",
         content_base64=base64.b64encode(payload).decode("ascii"),
@@ -78,14 +77,17 @@ def test_preserve_binary_artifact_decodes_base64(vault: Path) -> None:
 def test_preserve_with_description_writes_sidecar(vault: Path) -> None:
     result = preserve_module.preserve(
         vault,
-        scope="Yolo",
+        scope="Project Alpha",
         category="court-docs",
         filename="2026-05-01-summons.pdf",
         content_base64=base64.b64encode(b"%PDF-fake").decode("ascii"),
         description="Civil summons received via courier.",
         today=TODAY,
     )
-    assert result.sidecar_path == "Knowledge Base/Evidence/Yolo/court-docs/2026-05-01-summons.pdf.md"
+    assert (
+        result.sidecar_path
+        == "Knowledge Base/Evidence/Project Alpha/court-docs/2026-05-01-summons.pdf.md"
+    )
     sidecar = vault / result.sidecar_path
     assert sidecar.exists()
     text = _read(sidecar)
@@ -118,7 +120,7 @@ def test_preserve_pdf_artifact_uses_filename_md_sidecar(vault: Path) -> None:
     """Non-.md artifacts keep the original `<filename>.md` sidecar pattern."""
     result = preserve_module.preserve(
         vault,
-        scope="Mother Cancer",
+        scope="Private Family Case",
         category="labs",
         filename="2026-04-15-pathology.pdf",
         content_base64=base64.b64encode(b"%PDF-x").decode("ascii"),

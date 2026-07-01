@@ -66,7 +66,7 @@ def test_is_temporal_query_false(query: str) -> None:
         # exact: quotes, wikilink, or leading interrogative
         ('"exact phrase match"', "exact"),
         ("see [[Envelope]]", "exact"),
-        ("who is Karpathy", "exact"),
+        ("who is Lovelace", "exact"),
         ("what is the engine boundary", "exact"),
         ("which protocol drifts", "exact"),
         # temporal markers (and exact does NOT pre-empt a non-interrogative temporal)
@@ -96,7 +96,7 @@ def test_existing_suite_queries_classify_conceptual() -> None:
     conceptual (neutral weights) — that's what keeps the suite green."""
     for q in [
         "EGCG", "metabolism", "insulin", "metabolism curriculum",
-        "curriculum metabolism", "SKILL", "engine", "Karpathy",
+        "curriculum metabolism", "SKILL", "engine", "Lovelace",
         "reference-marker-xyz", "find-vault-skip-marker-abc", "X3",
         "X3 rep progression tracking", "regulator metabolism",
         "regulation metabolism", "distinctivetypeprobe", "rareindegreemarker",

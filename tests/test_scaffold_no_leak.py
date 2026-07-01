@@ -9,9 +9,9 @@ scaffold two ways:
    patterns (the `LEAK_PATTERNS` shared with the retired genericize script + the
    still-live rebuild-schema-zip tooling), so the structural guard never drifts.
 2. `test_scaffold_ships_no_personal_tokens` — an explicit denylist of the
-   author's personal names, products, podcast, domain, and vault-structure
-   labels. This is the hard wall: the leak class (which once shipped real
-   tenant/product/collaborator names to a friend) cannot recur on a hand-edit.
+   synthetic private names, products, domains, and vault-structure labels. This
+   is the hard wall: the leak class (shipping private tenant/product/collaborator
+   names) cannot recur on a hand-edit.
 
 Both run without the vault, so they work in CI.
 """
@@ -32,54 +32,40 @@ SOURCE = Path(kb_mcp.__file__).resolve().parent  # src/kb_mcp/
 REPO = Path(kb_mcp.__file__).resolve().parent.parent.parent  # src/kb_mcp -> repo root
 
 
-# Explicit personal-token denylist. Each entry is (label, regex, case_insensitive).
+# Explicit synthetic private-token denylist. Each entry is (label, regex, case_insensitive).
 # Careful matching avoids false positives on legitimate generic prose:
-#   - word boundaries on short names (Hugo, Kim),
-#   - "Sift" and "Yolo" are matched CASE-SENSITIVELY (title-case product/employer
-#     names) so they don't collide with the common verb "sift"/"shift" or the
+#   - word boundaries on short names,
+#   - product/employer names are matched CASE-SENSITIVELY so they don't collide
+#     with common verbs or the
 #     all-caps "YOLO" model,
-#   - "substrate" is a substring guard catching the company, the project key,
-#     and substratesystems.io — the generic scaffold avoids the common noun
-#     "substrate" entirely so this is safe,
 #   - bare "Q" and "tu" are deliberately NOT denylisted (too generic).
 _CI = True   # case-insensitive
 _CS = False  # case-sensitive
 _PERSONAL_TOKENS: list[tuple[str, str, bool]] = [
-    ("Hugo", r"\bHugo\b", _CI),
-    ("hugoander", r"hugoander", _CI),
-    ("Kim", r"\bKim\b", _CI),
-    ("Kimberly", r"\bKimberly\b", _CI),
-    ("Krafft", r"\bKrafft\b", _CI),
-    ("Substrate / substratesystems", r"substrate", _CI),  # company / key / domain
-    ("Endstate", r"endstate", _CI),                        # product
-    ("Sift", r"\bSift\b", _CS),                             # product (not "sift"/"shift")
-    ("Together Unprocessed", r"together\s+unprocessed", _CI),
-    ("Chaffee / ask-dr-chaffee", r"chaffee", _CI),
-    ("Cognitive Core", r"cognitive\s+core", _CI),
-    ("Personal Context", r"personal\s+context", _CI),
-    ("Yolo", r"\bYolo\b", _CS),                             # employer (not "YOLO" model)
-    ("Mother Cancer", r"mother\s+cancer", _CI),
+    ("PrivateName", r"\bPrivateName\b", _CI),
+    ("private-handle", r"private-handle", _CI),
+    ("Private Collaborator", r"private\s+collaborator", _CI),
+    ("Private Product", r"\bPrivateProduct\b", _CS),
+    ("Private Tenant", r"private\s+tenant", _CI),
+    ("Private Domain", r"private-domain\.example", _CI),
+    ("Private Vault Label", r"private\s+vault\s+label", _CI),
+    ("Private Family Case", r"private\s+family\s+case", _CI),
 ]
 
 
 # Source-tree denylist (src/kb_mcp/**). Distinct from the scaffold list above:
 # the shipped Python SOURCE legitimately uses the bare architecture noun
 # "substrate" (the "pure-substrate" principle), so this denylists
-# `substratesystems` (the domain/company) rather than bare `substrate`. Product
-# names that collide with common words are matched case-sensitively (`Sift`).
+# synthetic private domain labels rather than bare architectural terms. Product
+# names that collide with common words are matched case-sensitively.
 _SOURCE_PERSONAL_TOKENS: list[tuple[str, str, bool]] = [
-    ("Hugo", r"\bHugo\b", _CI),
-    ("hugoander", r"hugoander", _CI),
-    ("Kim", r"\bKim\b", _CI),
-    ("Kimberly", r"\bKimberly\b", _CI),
-    ("Krafft", r"\bKrafft\b", _CI),
-    ("substratesystems", r"substratesystems", _CI),       # domain/company (NOT bare "substrate")
-    ("Endstate", r"\bendstate\b", _CI),                   # product
-    ("Sift", r"\bSift\b", _CS),                            # product (not "sift"/"shift")
-    ("Together Unprocessed", r"together\s+unprocessed", _CI),
-    ("Chaffee / ask-dr-chaffee", r"chaffee", _CI),
-    ("Cognitive Core", r"cognitive\s+core", _CI),
-    ("Personal Context", r"personal\s+context", _CI),
+    ("PrivateName", r"\bPrivateName\b", _CI),
+    ("private-handle", r"private-handle", _CI),
+    ("Private Collaborator", r"private\s+collaborator", _CI),
+    ("Private Product", r"\bPrivateProduct\b", _CS),
+    ("Private Tenant", r"private\s+tenant", _CI),
+    ("Private Domain", r"private-domain\.example", _CI),
+    ("Private Vault Label", r"private\s+vault\s+label", _CI),
 ]
 
 
@@ -152,7 +138,7 @@ def test_source_ships_no_personal_tokens() -> None:
     docstrings, fallback constants, and config defaults must stay generic so an
     open-source release can't leak the original tenant. It deliberately allows
     the bare noun "substrate" (the pure-substrate architecture term) and pins
-    `substratesystems` instead.
+    synthetic private domain labels instead.
     """
     compiled = [
         (label, re.compile(rx, re.IGNORECASE if ci else 0))

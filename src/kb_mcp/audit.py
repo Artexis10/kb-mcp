@@ -48,16 +48,14 @@ from pathlib import Path
 
 import yaml
 
-from . import access
+from . import access, indexes
 from . import find as find_module
-from . import indexes
 from .vault import (
     _mask_code_spans,
     in_append_only_tree,
     kb_root,
     parse_frontmatter,
 )
-
 
 log = logging.getLogger(__name__)
 
@@ -573,7 +571,7 @@ def _check_tag_inconsistency(
     `Warning-Letter-Incident`).
 
     Only mechanical drift (case + separator) is detected. Semantic
-    near-duplicates like `metabolism` vs `metabolic` are NOT flagged — that
+    near-duplicates like `workflow` vs `workflows` are NOT flagged — that
     needs human or LLM judgment.
 
     Singleton tags (used exactly once) are NOT flagged — too noisy in
@@ -673,9 +671,9 @@ def _check_frontmatter_compliance(
                         f"field(s): {missing}"
                     ),
                     proposed_fix=(
-                        f"Add the missing field(s) via `set_frontmatter_field` "
-                        f"or `edit`. See `_Schema/references/frontmatter.md` "
-                        f"for the per-type required set."
+                        "Add the missing field(s) via `set_frontmatter_field` "
+                        "or `edit`. See `_Schema/references/frontmatter.md` "
+                        "for the per-type required set."
                     ),
                 ))
         # tenant: is Q-only.

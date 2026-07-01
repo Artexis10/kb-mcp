@@ -397,7 +397,7 @@ relationship: public-figure
 tags: [ml, llm]
 ---
 
-# Andrej Karpathy
+# Ada Lovelace
 
 ## Summary
 

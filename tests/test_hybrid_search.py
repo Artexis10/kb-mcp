@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from kb_mcp import bm25, embeddings, find as find_module, fusion
-
+from kb_mcp import bm25, embeddings, fusion
+from kb_mcp import find as find_module
 
 # ============================================================================
 # Light tests — no model load
@@ -473,7 +473,7 @@ def test_hybrid_is_strict_superset_of_keyword(vault) -> None:
     dropped it. Adding keyword as a fourth ranker guarantees this can't
     happen — for any query, hybrid_paths ⊇ keyword_paths.
     """
-    queries = ["EGCG", "metabolism", "engine", "insulin", "Karpathy"]
+    queries = ["EGCG", "metabolism", "engine", "insulin", "Lovelace"]
     for q in queries:
         bm25.clear_cache()
         find_module.clear_cache()

@@ -2,7 +2,7 @@
 
 A friend with no KB needs the three load-bearing files (index.md, log.md,
 _Schema/SKILL.md) to exist before the writers work. `init_vault` lays down the
-whole Karpathy-style structure in one shot.
+whole Lovelace-style structure in one shot.
 """
 
 from __future__ import annotations
