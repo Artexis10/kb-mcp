@@ -53,6 +53,21 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Verify package version matches release tag
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+
+          expected = os.environ["TAG"].removeprefix("v")
+          with open("pyproject.toml", "rb") as fh:
+              actual = tomllib.load(fh)["project"]["version"]
+          if actual != expected:
+              raise SystemExit(f"pyproject version {actual} does not match release tag {expected}")
+          PY
+
       - name: Build package artifacts
         run: uv build
 
@@ -62,7 +77,7 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" dist/* --clobber
   publish-pypi:
-    needs: release-please
+    needs: [release-please, build-artifacts]
     if: ${{ needs.release-please.outputs.release_created == 'true' && vars.PYPI_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     environment: pypi
