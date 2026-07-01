@@ -1,13 +1,13 @@
 # Release checklist
 
-kb-mcp is source-first today: users install from a checkout with `uv`. This
-checklist keeps that path predictable without pretending the project has a full
-PyPI release pipeline yet.
+kb-mcp is source-first today: users install from a checkout with `uv`. Release
+Please manages version bumps, `CHANGELOG.md`, tags, and GitHub Releases. PyPI
+publishing is intentionally not automated yet.
 
 ## Versioning policy
 
-The source of truth is `[project].version` in `pyproject.toml`. Tags use
-`vX.Y.Z`.
+The source of truth is `[project].version` in `pyproject.toml`, updated by
+Release Please. Tags use `vX.Y.Z`.
 
 While the project is pre-1.0 (`0.y.z`):
 
@@ -51,18 +51,32 @@ Run the optional checks only on machines configured for those profiles. `media`
 expects the media extra plus Tesseract; `remote` expects OAuth and public-url
 environment variables.
 
-## Release steps
+## Commit convention
 
-1. Update `pyproject.toml`'s version.
-2. Update release notes or the GitHub release body with user-visible changes,
-   migration notes, and any OpenSpec archives included in the release.
-3. Run the pre-release checks above.
-4. Commit the version/docs changes.
-5. Tag the commit with `vX.Y.Z`.
-6. Push the branch and tag.
-7. Attach the `dist/` artifacts from `uv build` to the GitHub release if you want
-   downloadable packages for that release.
+Release Please reads Conventional Commit messages after the latest release tag:
 
-PyPI publishing is deliberately not automated yet. Add it when the project wants
-package-index distribution, trusted publishing, and an explicit support contract
-for installed versions.
+- `fix: ...` -> patch release
+- `feat: ...` -> minor release
+- `feat!: ...` or a `BREAKING CHANGE:` footer -> major release
+
+Use scopes when helpful, for example `feat(doctor): ...` or
+`fix(media): ...`. `docs:`, `ci:`, and `chore:` are hidden from the public
+changelog by default and do not drive releases unless they include a breaking
+marker.
+
+## Release flow
+
+1. Merge feature/fix PRs to `main` using Conventional Commit titles.
+2. Release Please opens or updates a release PR that bumps `pyproject.toml`,
+   `.release-please-manifest.json`, and `CHANGELOG.md`.
+3. Confirm CI and the pre-release checks above.
+4. Merge the Release Please PR.
+5. Release Please tags `vX.Y.Z` and creates the GitHub Release.
+6. The release workflow builds `dist/` with `uv build` and uploads the wheel/sdist
+   to the GitHub Release.
+
+The initial `0.1.0` baseline is recorded in `.release-please-manifest.json` and
+`CHANGELOG.md`; future releases should come from Release Please rather than
+manual version edits. Add PyPI publishing when the project wants package-index
+distribution, trusted publishing, and an explicit support contract for installed
+versions.

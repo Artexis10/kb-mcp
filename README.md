@@ -307,4 +307,5 @@ AGPL-3.0-or-later — see [LICENSE](LICENSE).
 
 Versioning follows the lightweight SemVer policy in
 **[docs/release.md](docs/release.md)**. The source of truth is
-`pyproject.toml`'s `[project].version`; release tags use `vX.Y.Z`.
+`pyproject.toml`'s `[project].version`; release tags use `vX.Y.Z`. Release
+Please drives future version bumps from Conventional Commit messages.
