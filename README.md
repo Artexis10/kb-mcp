@@ -108,8 +108,8 @@ claude mcp add exomem \
   -- exomem --transport stdio
 ```
 
-For Claude Code, install the bundled skill so the agent knows when to search,
-capture, and compile notes:
+For Claude Code, install the bundled Exomem Knowledge Base skill so the agent
+knows when to search, capture, and compile notes:
 
 ```bash
 exomem install-skill
@@ -121,8 +121,10 @@ Optional for heavier daily use:
 exomem install-hook
 ```
 
-The skill is recommended for Claude Code. Hooks are Claude Code-only reliability
-nudges for long sessions: a read-side reminder before answers and a write-side
+The skill installs under the stable Claude Code name `knowledge-base`; Exomem is
+the server and tool layer behind it. The skill is recommended for Claude Code.
+Hooks are Claude Code-only reliability nudges for long sessions: a read-side
+reminder before answers and a write-side
 reminder at natural stopping points. Other MCP clients can still use the server;
 put the same knowledge-discipline instructions in their system/project
 instructions if they do not support skills.

@@ -1,6 +1,6 @@
-"""install-skill: copy the bundled knowledge-base skill into Claude Code.
+"""install-skill: copy the bundled Exomem knowledge-base skill into Claude Code.
 
-The MCP server is only the *hands* — the `find`/`add`/`note`/`edit` tools. The
+The Exomem MCP server is only the *hands* — the `find`/`add`/`note`/`edit` tools. The
 *brain* that tells Claude when to capture, how to file a source, and how to
 compile a note under the schema is the **skill**: `_scaffold/_Schema/SKILL.md`
 plus its `references/`. Claude Code discovers skills at
@@ -17,7 +17,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-# The skill ships inside the package, the same `_Schema/` that `init` lays into a
+# The Exomem Knowledge Base skill ships inside the package, the same `_Schema/` that `init` lays into a
 # vault. Resolving from `__file__` works for an installed wheel too, not just a
 # git checkout — same pattern as init.py's _SCAFFOLD.
 _SKILL_SRC = Path(__file__).parent / "_scaffold" / "_Schema"
@@ -33,7 +33,7 @@ def install_skill(
     force: bool = False,
     link: bool = False,
 ) -> dict:
-    """Install the bundled knowledge-base skill into a Claude Code skills folder.
+    """Install the bundled Exomem knowledge-base skill into a Claude Code skills folder.
 
     Copies (or, with ``link=True``, symlinks) the canonical `_Schema/` — SKILL.md,
     references/, project-keys.yaml — to ``target`` (default

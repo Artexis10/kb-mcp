@@ -160,8 +160,9 @@ Restart Claude Code; you should see the `exomem` tools (`find`, `note`, `add`,
 
 ## 6. Install the skill (REQUIRED — this is the brain)
 
-The server gives Claude the tools; **the skill is what makes Claude actually use
-them** — capture at natural stopping points, file sources to the right folder,
+The server gives Claude the tools; **the Exomem Knowledge Base skill is what
+makes Claude actually use them** — capture at natural stopping points, file
+sources to the right folder,
 compile notes under the schema. One command installs it straight from the repo
 into Claude Code's skills folder (no vault path needed — it ships in the package):
 
@@ -169,8 +170,10 @@ into Claude Code's skills folder (no vault path needed — it ships in the packa
 uv run python -m kb_mcp install-skill
 ```
 
-That writes the skill to `~/.claude/skills/knowledge-base/`. **Restart Claude
-Code** so it loads. Useful flags: `--link` symlinks instead of copying so it
+That writes the skill to `~/.claude/skills/knowledge-base/`. The stable skill
+name remains `knowledge-base`; Exomem is the MCP server/tool layer it teaches
+Claude to use. **Restart Claude Code** so it loads. Useful flags: `--link`
+symlinks instead of copying so it
 tracks repo updates as you `git pull` (falls back to a copy if your OS refuses
 the symlink); `--force` overwrites an existing install; `--target` picks a
 different folder.
@@ -200,6 +203,9 @@ pulled in. This one command installs two small hooks that fix both directions:
 ```bash
 uv run python -m kb_mcp install-hook
 ```
+
+If you maintain alternate Claude settings files with yadm, wire each active
+variant too, for example `--settings ~/.claude/settings.json##os.Msys`.
 
 - **Write** — a `Stop` hook that re-checks "is this worth saving?" at the end of
   each turn, so conclusions get captured on their own.

@@ -3,7 +3,7 @@
 Subcommands:
 - (default) serve the MCP server — `python -m kb_mcp [--transport ...]`
 - `init` — bootstrap a fresh Knowledge Base into a vault
-- `install-skill` — install the knowledge-base skill into Claude Code
+- `install-skill` — install the Exomem knowledge-base skill into Claude Code
 - `install-hook` — wire the KB capture + retrieval hooks into Claude Code
 - `doctor` — read-only local install/setup preflight
 - `backfill-media` — make pre-existing Evidence binaries searchable (sidecar + OCR/ASR/PDF + CLIP)
@@ -280,7 +280,7 @@ def _init_main(argv: list[str]) -> int:
     print(f"  {len(report['created'])} files created + the typed folder tree.")
     print("Next:")
     print("  1. Point Claude Code at this vault (see SETUP-LOCAL.md).")
-    print("  2. Install the skill so Claude knows how to use it: python -m kb_mcp install-skill")
+    print("  2. Install the Exomem Knowledge Base skill so Claude knows how to use it: python -m kb_mcp install-skill")
     print("  3. Adapt Knowledge Base/_Schema/project-keys.yaml to your own projects.")
     return 0
 
@@ -289,7 +289,7 @@ def _install_skill_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="exomem install-skill",
         description=(
-            "Install the knowledge-base skill into Claude Code's skills folder. "
+            "Install the Exomem knowledge-base skill into Claude Code's skills folder. "
             "The MCP server is the hands; the skill is the brain that tells Claude "
             "when to capture and how to file — without it, the tools sit unused."
         ),
@@ -320,7 +320,7 @@ def _install_skill_main(argv: list[str]) -> int:
         print(f"exomem install-skill: {e}", file=sys.stderr)
         return 1
     print(
-        f"Installed the knowledge-base skill ({report['mode']}, "
+        f"Installed the Exomem knowledge-base skill ({report['mode']}, "
         f"{report['files']} files):"
     )
     print(f"  {report['target']}")
