@@ -118,3 +118,100 @@ def test_start_no_op_when_kb_missing(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(file_watcher, "_import_watchdog", lambda: (object, object))
     w = file_watcher.FileWatcher(tmp_path)
     assert w.start() is False
+
+
+# ---- Self-write suppression (OpenSpec: improve-find-latency-token-cost) ----
+
+
+def test_self_write_upsert_suppressed(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    ups, dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    w = file_watcher.FileWatcher(vault)
+    p = vault / "Knowledge Base" / "Notes" / "self-write.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# self write\n", encoding="utf-8")
+    file_watcher.register_self_write(vault, [p])
+    w._record(p, deleted=False)
+    w._flush()
+    assert ups == [] and dels == []
+
+
+def test_external_edit_after_self_write_dispatches(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    ups, _dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    w = file_watcher.FileWatcher(vault)
+    p = vault / "Knowledge Base" / "Notes" / "self-then-external.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# self write\n", encoding="utf-8")
+    file_watcher.register_self_write(vault, [p])
+    # A later EXTERNAL edit changes the file signature — must dispatch.
+    p.write_text("# self write\n\nexternally edited, longer now\n", encoding="utf-8")
+    w._record(p, deleted=False)
+    w._flush()
+    assert ups and p in ups[0]
+
+
+def test_upsert_suppression_expires(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    ups, _dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    monkeypatch.setattr(file_watcher, "UPSERT_SUPPRESS_TTL_SECONDS", -1.0)
+    w = file_watcher.FileWatcher(vault)
+    p = vault / "Knowledge Base" / "Notes" / "expired-suppression.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# expired\n", encoding="utf-8")
+    file_watcher.register_self_write(vault, [p])
+    w._record(p, deleted=False)
+    w._flush()
+    assert ups and p in ups[0]
+
+
+def test_self_delete_suppressed(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    ups, dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    w = file_watcher.FileWatcher(vault)
+    rel = "Knowledge Base/Notes/self-deleted.md"
+    file_watcher.register_self_delete(vault, [rel])
+    w._record(vault / rel, deleted=True)
+    w._flush()
+    assert ups == [] and dels == []
+
+
+def test_delete_suppression_expires(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ups, dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    monkeypatch.setattr(file_watcher, "DELETE_SUPPRESS_TTL_SECONDS", -1.0)
+    w = file_watcher.FileWatcher(vault)
+    rel = "Knowledge Base/Notes/expired-delete.md"
+    file_watcher.register_self_delete(vault, [rel])
+    w._record(vault / rel, deleted=True)
+    w._flush()
+    assert dels == [[rel]]
+
+
+def test_unregistered_external_events_still_dispatch(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    ups, dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    w = file_watcher.FileWatcher(vault)
+    p = vault / "Knowledge Base" / "Notes" / "external-edit.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# external\n", encoding="utf-8")
+    w._record(p, deleted=False)
+    gone = vault / "Knowledge Base" / "Notes" / "external-gone.md"
+    w._record(gone, deleted=True)
+    w._flush()
+    assert ups and p in ups[0]
+    assert dels and "Knowledge Base/Notes/external-gone.md" in dels[0]
+
+
+def test_batch_atomic_write_registers_suppression(vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kb_mcp.vault import PlannedWrite, batch_atomic_write
+
+    ups, _dels = _stub_embeddings(monkeypatch)
+    file_watcher.clear_self_write_registry()
+    w = file_watcher.FileWatcher(vault)
+    p = vault / "Knowledge Base" / "Notes" / "batch-written.md"
+    batch_atomic_write([PlannedWrite(path=p, content="# batch\n")], vault_root=vault)
+    ups.clear()  # the writer's own (stubbed) upsert — not the echo under test
+    w._record(p, deleted=False)
+    w._flush()
+    assert ups == []

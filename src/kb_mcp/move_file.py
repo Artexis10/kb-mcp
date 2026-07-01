@@ -182,6 +182,15 @@ def move_file(
         warnings.append(f"partial write — reconcile on desktop: {e}")
         raise
 
+    # Register the self-authored removal BEFORE the unlink so the watcher's
+    # delete event for the old path is dropped (we purge its sidecar rows
+    # below; the new path was registered by batch_atomic_write above).
+    try:
+        from . import file_watcher
+        file_watcher.register_self_delete(vault_root, [old_rel])
+    except Exception:  # noqa: BLE001 — suppression is best-effort
+        log.debug("self-delete suppression registration failed", exc_info=True)
+
     try:
         old_abs.unlink()
     except OSError as e:

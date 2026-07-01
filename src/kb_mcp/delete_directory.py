@@ -208,6 +208,15 @@ def delete_directory(
         except ValueError:
             continue
 
+    # Register the self-authored removals BEFORE the move so the watcher's
+    # per-file delete events are dropped (sidecar purge happens below).
+    if md_rels_to_unindex:
+        try:
+            from . import file_watcher
+            file_watcher.register_self_delete(vault_root, md_rels_to_unindex)
+        except Exception:  # noqa: BLE001 — suppression is best-effort
+            log.debug("self-delete suppression registration failed", exc_info=True)
+
     try:
         shutil.move(str(abs_path), str(trash_abs))
     except OSError as e:

@@ -260,6 +260,8 @@ def op_find(
     prefer_compiled: bool = True,
     prefer_active: bool = True,
     pack: bool = False,
+    detail: str = "full",
+    include_timings: bool = False,
 ) -> list[dict] | dict:
     """Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within.
 
@@ -342,6 +344,20 @@ def op_find(
             reason over the matches in one shot instead of fanning out `get`
             calls. Bounded with explicit `truncation`; the tension part needs
             the embedding sidecar and reports `embeddings_available`.
+        detail: Result verbosity. "full" (default) keeps the current hit
+            shape including `excerpt` and `signals`. "compact" returns the
+            SAME ranked hits as token-cheap routing stubs — path, title,
+            type, scope, updated, plus lifecycle/media/outside_kb markers
+            when present — omitting `excerpt` and `signals`. Use compact
+            for cheap proactive recall, then `get` a chosen page (or rerun
+            with detail="full") when you need the why.
+        include_timings: When true (off by default), the return becomes an
+            envelope {"hits": [...], "timings": {...}} (with pack=true the
+            envelope also carries "pack"). `timings` reports total_ms,
+            hot-cache status, and per-stage milliseconds for the retrieval
+            lanes (skipped/failed optional lanes are marked, never fatal).
+            Diagnostics only — timings never include note content. Omitted
+            → the response shape is unchanged.
 
     Returns:
         With pack off (default): a list of {path, type, scope, title, updated,
@@ -363,7 +379,16 @@ def op_find(
         With pack on: {"hits": [...the same list...], "pack": {packed_paths,
         claims, neighborhood, contradictions: {superseded, tension},
         embeddings_available, truncation}}.
+        With detail="compact": each hit is the routing stub described under
+        `detail` (no excerpt/signals) — same paths, same order.
+        With include_timings on: {"hits": [...], ["pack": {...},]
+        "timings": {total_ms, cache, stages}}.
     """
+    if detail not in ("full", "compact"):
+        raise ValueError(
+            f"find: detail must be 'full' or 'compact', got {detail!r}"
+        )
+    timings = find_module.FindTimings() if include_timings else None
     hits = find_module.find(
         vault_root,
         query=query,
@@ -380,7 +405,18 @@ def op_find(
         rerank=rerank,
         prefer_compiled=prefer_compiled,
         prefer_active=prefer_active,
+        timings=timings,
     )
+    pack_obj: dict | None = None
+    if pack:
+        with find_module._span(timings, "pack"):
+            pack_obj = context_pack_module.assemble_pack(vault_root, hits)
+    with find_module._span(timings, "serialize"):
+        if detail == "compact":
+            hit_dicts = [h.as_compact_dict() for h in hits]
+        else:
+            hit_dicts = [h.as_dict() for h in hits]
+    timings_dict = timings.as_dict() if timings is not None else None
     # Durable structured log → feeds the offline retrieval feedback loop.
     # Best-effort; never affects the returned result.
     query_log.log_find_call(
@@ -388,13 +424,32 @@ def op_find(
         types=types, projects=projects, tags=tags,
         limit=limit, rerank=rerank, prefer_compiled=prefer_compiled,
         graph=graph, hits=hits,
+        timing_summary=_timing_log_summary(timings_dict),
     )
-    hit_dicts = [h.as_dict() for h in hits]
-    if not pack:
-        return hit_dicts
+    if timings_dict is None:
+        if not pack:
+            return hit_dicts
+        return {"hits": hit_dicts, "pack": pack_obj}
+    out: dict = {"hits": hit_dicts}
+    if pack:
+        out["pack"] = pack_obj
+    out["timings"] = timings_dict
+    return out
+
+
+def _timing_log_summary(timings_dict: dict | None) -> dict | None:
+    """Query-log-safe slice of a timings envelope: totals + per-stage ms only
+    (never content; stage entries drop skip/error detail to stay compact)."""
+    if timings_dict is None:
+        return None
     return {
-        "hits": hit_dicts,
-        "pack": context_pack_module.assemble_pack(vault_root, hits),
+        "total_ms": timings_dict.get("total_ms"),
+        "cache_hit": bool(timings_dict.get("cache", {}).get("hit")),
+        "stage_ms": {
+            name: entry["ms"]
+            for name, entry in timings_dict.get("stages", {}).items()
+            if isinstance(entry, dict) and "ms" in entry
+        },
     }
 
 

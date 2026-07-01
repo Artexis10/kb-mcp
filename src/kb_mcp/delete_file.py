@@ -227,6 +227,15 @@ def delete_file(
                 break
             i += 1
 
+    # Register the self-authored removal BEFORE the move so the watcher's
+    # delete event for the KB path is dropped (we purge the sidecar ourselves
+    # below). Harmless if the move then fails — the entry TTLs out.
+    try:
+        from . import file_watcher
+        file_watcher.register_self_delete(vault_root, [rel_path])
+    except Exception:  # noqa: BLE001 — suppression is best-effort
+        log.debug("self-delete suppression registration failed", exc_info=True)
+
     try:
         shutil.move(str(abs_path), str(trash_abs))
     except OSError as e:

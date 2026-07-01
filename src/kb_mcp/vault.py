@@ -205,6 +205,16 @@ def batch_atomic_write(
         raise
 
     if vault_root is not None and replaced:
+        # Register the self-authored replacements so the live watcher drops
+        # their echo instead of re-embedding the same files a second time.
+        try:
+            from . import file_watcher
+            file_watcher.register_self_write(vault_root, replaced)
+        except Exception:  # noqa: BLE001 — suppression is best-effort
+            import logging
+            logging.getLogger(__name__).debug(
+                "self-write suppression registration failed", exc_info=True
+            )
         try:
             from . import embeddings
             embeddings.upsert_after_write(vault_root, replaced)

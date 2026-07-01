@@ -15,11 +15,16 @@ Lazy + soft-fail: `watchdog` is imported only in `start()`. If it isn't installe
 watcher is a no-op and the server runs normally (mirrors how `media_worker`/`embeddings`
 soft-fail on missing optional deps).
 
-Self-write echo: the server's own writers already call `upsert_after_write`, so the
-watcher ALSO sees those file changes and re-embeds them a second time. That's wasteful
-but idempotent and harmless (the same content embeds to the same vectors); the debounce
-mitigates it. We deliberately do NOT build write-tracking to suppress the echo — the
-complexity isn't worth it.
+Self-write suppression: the server's own writers already refresh the embedding
+sidecar (`vault.batch_atomic_write` → `upsert_after_write`; delete/move paths →
+`delete_after_remove`), so their filesystem mutations would echo through the watcher
+and re-embed the same markdown a second time. Writers register those mutations in the
+module-level suppression registry below and `_record` drops a MATCHING event instead
+of enqueueing it. The contract: an upsert event is suppressed only while the file's
+(mtime_ns, size) signature still equals what the writer produced — a later external
+edit changes the signature and dispatches normally; delete suppressions live behind a
+short TTL (there is nothing left to stat). Entries are bounded and expire, so the
+registry is opportunistic: a missed registration merely costs the old harmless echo.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import embeddings
@@ -34,6 +40,127 @@ from . import embeddings
 log = logging.getLogger(__name__)
 
 DEBOUNCE_SECONDS = 0.5
+
+# ---- Self-write suppression registry (module-level: available to writers even
+# when no FileWatcher is running; keyed by (resolved vault root, vault-rel path)) ----
+UPSERT_SUPPRESS_TTL_SECONDS = 30.0
+DELETE_SUPPRESS_TTL_SECONDS = 5.0
+_SUPPRESS_MAX_ENTRIES = 4096
+_SUPPRESS_LOCK = threading.Lock()
+# (root, rel) -> (mtime_ns, size, monotonic deadline)
+_SELF_UPSERTS: dict[tuple[str, str], tuple[int, int, float]] = {}
+# (root, rel) -> monotonic deadline
+_SELF_DELETES: dict[tuple[str, str], float] = {}
+
+
+def _canon_root(vault_root: Path) -> str:
+    try:
+        return str(vault_root.resolve())
+    except OSError:
+        return str(vault_root)
+
+
+def _rel_posix(vault_root: Path, path: Path) -> str | None:
+    """Vault-relative POSIX path, tolerant of already-deleted files."""
+    try:
+        return path.resolve().relative_to(vault_root.resolve()).as_posix()
+    except (ValueError, OSError):
+        try:
+            return path.relative_to(vault_root).as_posix()
+        except ValueError:
+            return None
+
+
+def _prune_locked(now: float) -> None:
+    for k in [k for k, v in _SELF_UPSERTS.items() if v[2] <= now]:
+        _SELF_UPSERTS.pop(k, None)
+    for k in [k for k, v in _SELF_DELETES.items() if v <= now]:
+        _SELF_DELETES.pop(k, None)
+    if len(_SELF_UPSERTS) > _SUPPRESS_MAX_ENTRIES:
+        for k in sorted(_SELF_UPSERTS, key=lambda k: _SELF_UPSERTS[k][2])[
+            : len(_SELF_UPSERTS) - _SUPPRESS_MAX_ENTRIES
+        ]:
+            _SELF_UPSERTS.pop(k, None)
+    if len(_SELF_DELETES) > _SUPPRESS_MAX_ENTRIES:
+        for k in sorted(_SELF_DELETES, key=lambda k: _SELF_DELETES[k])[
+            : len(_SELF_DELETES) - _SUPPRESS_MAX_ENTRIES
+        ]:
+            _SELF_DELETES.pop(k, None)
+
+
+def register_self_write(vault_root: Path, paths: Iterable[Path]) -> None:
+    """Record server-authored markdown replacements so their watcher echo is
+    dropped. Best-effort: unreadable/gone files are skipped (they simply won't
+    be suppressed)."""
+    root = _canon_root(vault_root)
+    now = time.monotonic()
+    with _SUPPRESS_LOCK:
+        for p in paths:
+            p = Path(p)
+            if p.suffix.lower() != ".md":
+                continue
+            rel = _rel_posix(vault_root, p)
+            if rel is None:
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            _SELF_UPSERTS[(root, rel)] = (
+                st.st_mtime_ns,
+                st.st_size,
+                now + UPSERT_SUPPRESS_TTL_SECONDS,
+            )
+        _prune_locked(now)
+
+
+def register_self_delete(vault_root: Path, rel_paths: Iterable[str]) -> None:
+    """Record server-authored markdown removals (delete/trash/move-away) so
+    their watcher echo is dropped. TTL-bounded — there is no file left to
+    signature-match."""
+    root = _canon_root(vault_root)
+    now = time.monotonic()
+    with _SUPPRESS_LOCK:
+        for rel in rel_paths:
+            rel_posix = str(rel).replace("\\", "/")
+            if not rel_posix.lower().endswith(".md"):
+                continue
+            _SELF_DELETES[(root, rel_posix)] = now + DELETE_SUPPRESS_TTL_SECONDS
+        _prune_locked(now)
+
+
+def _is_self_write_event(vault_root: Path, path: Path, *, deleted: bool) -> bool:
+    """True when this event matches a registered self-authored mutation."""
+    rel = _rel_posix(vault_root, path)
+    if rel is None:
+        return False
+    key = (_canon_root(vault_root), rel)
+    now = time.monotonic()
+    with _SUPPRESS_LOCK:
+        _prune_locked(now)
+        if deleted:
+            deadline = _SELF_DELETES.get(key)
+            return deadline is not None and deadline > now
+        entry = _SELF_UPSERTS.get(key)
+    if entry is None:
+        return False
+    mtime_ns, size, deadline = entry
+    if deadline <= now:
+        return False
+    try:
+        st = path.stat()
+    except OSError:
+        # Can't verify the signature — let the event dispatch (safe: the
+        # duplicate upsert is idempotent; hiding a real edit is not).
+        return False
+    return st.st_mtime_ns == mtime_ns and st.st_size == size
+
+
+def clear_self_write_registry() -> None:
+    """Test hook: drop all suppression entries."""
+    with _SUPPRESS_LOCK:
+        _SELF_UPSERTS.clear()
+        _SELF_DELETES.clear()
 
 
 def _import_watchdog():
@@ -70,6 +197,9 @@ class FileWatcher:
         """Record a `.md` change. Coalesces rapid events for the same path."""
         if path.suffix.lower() != ".md":
             return  # only markdown is embedded; ignore attachments / sidecars-of-binaries churn
+        if _is_self_write_event(self._vault_root, path, deleted=deleted):
+            log.debug("file watcher: suppressed self-write echo for %s", path)
+            return
         with self._lock:
             if deleted:
                 self._pending_upsert.discard(path)

@@ -18,7 +18,7 @@ Run `uv run python scripts/generate-capabilities.py --check` to verify it is cur
 
 | Command | Tier | Surfaces | Mode | Destructive | CLI positional | Parameters | Summary |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
-| find | 1 | MCP, REST, CLI | read | no | query | query, types, projects, tags, speakers, file_types, exclude_file_types, limit, scope, mode, graph, rerank, prefer_compiled, prefer_active, pack | Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within. |
+| find | 1 | MCP, REST, CLI | read | no | query | query, types, projects, tags, speakers, file_types, exclude_file_types, limit, scope, mode, graph, rerank, prefer_compiled, prefer_active, pack, detail, include_timings | Search / find / look up / query / retrieve / recall pages in the Knowledge Base (KB vault): notes, sources, insights, failures, patterns, experiments, entities. Hybrid semantic + keyword search, read-only. Filters are AND'd; tag/project lists are OR'd within. |
 | suggest_links | 1 | MCP, REST, CLI | read | no | - | path, draft_title, draft_body, limit, scope | Suggest existing KB pages a note should link to. Read-only. |
 | add | 1 | MCP, REST, CLI | write | no | - | content*, source_type*, title*, url, tags, why_captured | Capture raw content as an immutable source page in the Knowledge Base. |
 | audit | 1 | MCP, REST, CLI | read | no | - | categories | Audit / lint / health-check the Knowledge Base: find orphans, broken wikilinks, supersession gaps, stale unprocessed sources, and stale-review candidates. Read-only. |

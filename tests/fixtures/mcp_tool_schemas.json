@@ -667,6 +667,16 @@
           "default": false,
           "type": "boolean",
           "description": "When true (off by default), ALSO assemble a reasoning-ready\ncontext pack from the top hits and change the return to\n{\"hits\": [...], \"pack\": {...}} (with pack off, the return is the\nusual hit list, unchanged). The pack is PURE MEASUREMENT over the\nnotes you already wrote — no server-side reasoning: each top note's\nstructurally-extracted key claims (lede + headline-section lines +\nheading outline), the 1-hop wikilink neighbourhood of those notes\nranked by co-citation, and the contradictions among them (recorded\nsupersession edges + proximity \"tension\" pairs in the embedding\nband, surfaced for you to judge — proximity, not polarity). Lets you\nreason over the matches in one shot instead of fanning out `get`\ncalls. Bounded with explicit `truncation`; the tension part needs\nthe embedding sidecar and reports `embeddings_available`."
+        },
+        "detail": {
+          "default": "full",
+          "type": "string",
+          "description": "Result verbosity. \"full\" (default) keeps the current hit\nshape including `excerpt` and `signals`. \"compact\" returns the\nSAME ranked hits as token-cheap routing stubs — path, title,\ntype, scope, updated, plus lifecycle/media/outside_kb markers\nwhen present — omitting `excerpt` and `signals`. Use compact\nfor cheap proactive recall, then `get` a chosen page (or rerun\nwith detail=\"full\") when you need the why."
+        },
+        "include_timings": {
+          "default": false,
+          "type": "boolean",
+          "description": "When true (off by default), the return becomes an\nenvelope {\"hits\": [...], \"timings\": {...}} (with pack=true the\nenvelope also carries \"pack\"). `timings` reports total_ms,\nhot-cache status, and per-stage milliseconds for the retrieval\nlanes (skipped/failed optional lanes are marked, never fatal).\nDiagnostics only — timings never include note content. Omitted\n→ the response shape is unchanged."
         }
       },
       "type": "object"

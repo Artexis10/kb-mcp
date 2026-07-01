@@ -68,8 +68,14 @@ def log_find_call(
     prefer_compiled: bool,
     graph: bool,
     hits: list[Any],
+    timing_summary: dict | None = None,
 ) -> None:
-    """Append one structured record for a find() call. Best-effort."""
+    """Append one structured record for a find() call. Best-effort.
+
+    `timing_summary` (present only when the caller opted into `find` timing
+    diagnostics) carries total/cache/per-stage milliseconds ONLY — the
+    paths-and-signals-never-content rule above applies to it too.
+    """
     if _disabled():
         return
     try:
@@ -83,22 +89,22 @@ def log_find_call(
                     "signals": d.get("signals", {}),
                 }
             )
-        _append(
-            QUERIES_PATH,
-            {
-                "ts": _now_iso(),
-                "query": query,
-                "mode": mode,
-                "scope": scope,
-                "filters": {"types": types, "projects": projects, "tags": tags},
-                "limit": limit,
-                "rerank": rerank,
-                "prefer_compiled": prefer_compiled,
-                "graph": graph,
-                "n_results": len(hits),
-                "top_k": top_k,
-            },
-        )
+        record = {
+            "ts": _now_iso(),
+            "query": query,
+            "mode": mode,
+            "scope": scope,
+            "filters": {"types": types, "projects": projects, "tags": tags},
+            "limit": limit,
+            "rerank": rerank,
+            "prefer_compiled": prefer_compiled,
+            "graph": graph,
+            "n_results": len(hits),
+            "top_k": top_k,
+        }
+        if timing_summary:
+            record["timings"] = timing_summary
+        _append(QUERIES_PATH, record)
     except Exception as e:  # noqa: BLE001
         log.debug("log_find_call failed: %s", e)
 

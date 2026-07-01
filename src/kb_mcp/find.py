@@ -9,12 +9,17 @@ Cached in-process between calls: keyed by file path, invalidated by mtime.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
 import math
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -429,6 +434,31 @@ class Hit:
             out["signals"] = signals
         return out
 
+    def as_compact_dict(self) -> dict:
+        """Token-cheap routing shape: enough metadata to pick a page for a
+        follow-up `get`, with the token-heavy `excerpt` and `signals` omitted
+        (rerun with detail="full" when you need the why)."""
+        out: dict = {
+            "path": self.path,
+            "type": self.type,
+            "scope": self.scope,
+            "title": self.title,
+            "updated": self.updated,
+        }
+        if self.media_type:
+            out["media_type"] = self.media_type
+        if self.media_file:
+            out["media_file"] = self.media_file
+        if self.clip_frame_ts is not None:
+            out["clip_match_at"] = _format_timestamp(self.clip_frame_ts)
+        if self.outside_kb:
+            out["outside_kb"] = True
+        if self.status and self.status != "active":
+            out["status"] = self.status
+        if self.superseded_by:
+            out["superseded_by"] = self.superseded_by
+        return out
+
 
 @dataclass
 class FrontmatterCache:
@@ -452,6 +482,119 @@ class FrontmatterCache:
 
 
 _CACHE = FrontmatterCache()
+
+
+class FindTimings:
+    """Opt-in per-stage timing collector for one `find` call.
+
+    Records milliseconds per named retrieval stage plus total elapsed time and
+    hot-cache status. Carries NO note content — stage names, numbers, flags,
+    and short exception class names only (the spec forbids bodies, excerpts,
+    query-expanded text, and vectors in diagnostics).
+    """
+
+    def __init__(self) -> None:
+        self._t0 = time.perf_counter()
+        self.stages: dict[str, dict[str, Any]] = {}
+        self.cache: dict[str, Any] = {"enabled": False, "hit": False}
+
+    @contextmanager
+    def span(self, name: str):
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            entry = self.stages.setdefault(name, {})
+            entry["ms"] = round((time.perf_counter() - t0) * 1000.0, 3)
+
+    def skipped(self, name: str) -> None:
+        self.stages.setdefault(name, {})["skipped"] = True
+
+    def error(self, name: str, exc: BaseException) -> None:
+        self.stages.setdefault(name, {})["error"] = type(exc).__name__
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "total_ms": round((time.perf_counter() - self._t0) * 1000.0, 3),
+            "cache": dict(self.cache),
+            "stages": {k: dict(v) for k, v in self.stages.items()},
+        }
+
+
+def _span(timings: FindTimings | None, name: str):
+    """A timing span when a collector is present, else a no-op context."""
+    return timings.span(name) if timings is not None else nullcontext()
+
+
+# --------------------------------------------------------------------------- #
+# Hot find cache: bounded in-process LRU over base Hit lists (OpenSpec change
+# improve-find-latency-token-cost). Keyed by the FULL recall request (every
+# ranking/filtering knob + the resolved RankingConfig, which is frozen and
+# hashable) plus a freshness key covering the markdown scope the request can
+# see, the embedding/CLIP sidecars when a semantic lane could contribute, and
+# today's date (temporal lanes and recency filters are date-relative). Cached
+# values are deep-copied on the way in AND out so caller mutation can never
+# poison a later response. `KB_MCP_FIND_CACHE_SIZE=0` disables it.
+# --------------------------------------------------------------------------- #
+_FIND_CACHE: OrderedDict[tuple, list[Hit]] = OrderedDict()
+_FIND_CACHE_LOCK = threading.Lock()
+_DEFAULT_FIND_CACHE_SIZE = 32
+
+
+def _find_cache_size() -> int:
+    raw = os.environ.get("KB_MCP_FIND_CACHE_SIZE")
+    if raw is None or not raw.strip():
+        return _DEFAULT_FIND_CACHE_SIZE
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        log.warning("KB_MCP_FIND_CACHE_SIZE=%r is not an int; using default", raw)
+        return _DEFAULT_FIND_CACHE_SIZE
+
+
+def _stat_walk_freshness(paths) -> tuple[int, int]:
+    """(file count, max st_mtime_ns) over an iterable of paths."""
+    count = 0
+    latest = 0
+    for p in paths:
+        try:
+            ns = p.stat().st_mtime_ns
+        except OSError:
+            continue
+        count += 1
+        if ns > latest:
+            latest = ns
+    return count, latest
+
+
+def _freshness_key(
+    vault_root: Path, *, scope: str, query_norm: str, mode: str
+) -> tuple:
+    """Freshness inputs that can change this request's answer.
+
+    - scope="kb-only": KB count/max-mtime only.
+    - scope="vault": full-vault walk count/max-mtime.
+    - scope="kb" with a non-empty query: BOTH (auto-widen reserves out-of-KB
+      slots on every non-empty query).
+    - hybrid/vector modes: the embedding and CLIP sidecar mtimes (0 when
+      absent), since sidecar refreshes change semantic results.
+    """
+    parts: list[Any] = [date.today().toordinal()]
+    kb = vault_root / "Knowledge Base"
+    if scope in ("kb", "kb-only"):
+        walk = _walk_md(kb) if kb.is_dir() else ()
+        parts.append(("kb", *_stat_walk_freshness(walk)))
+    if scope == "vault" or (scope == "kb" and query_norm):
+        from .vault import walk_vault_md
+
+        parts.append(("vault", *_stat_walk_freshness(walk_vault_md(vault_root))))
+    if mode in ("hybrid", "vector"):
+        for name in (".embeddings.sqlite", ".clip.sqlite"):
+            try:
+                parts.append((name, (kb / name).stat().st_mtime_ns))
+            except OSError:
+                parts.append((name, 0))
+    return tuple(parts)
 
 
 def find(
@@ -478,6 +621,7 @@ def find(
     prefer_compiled: bool = True,
     prefer_active: bool = True,
     config: RankingConfig | None = None,
+    timings: FindTimings | None = None,
 ) -> list[Hit]:
     """Search the vault. Returns up to `limit` hits.
 
@@ -559,6 +703,38 @@ def find(
     limit = min(limit, 100)
     query_norm = (query or "").lower().strip()
 
+    # ---- Hot cache lookup (freshness-keyed; see _freshness_key above) ----
+    resolved_config = config if config is not None else _active_ranking()
+    cache_size = _find_cache_size()
+    cache_key: tuple | None = None
+    if timings is not None:
+        timings.cache["enabled"] = cache_size > 0
+    if cache_size > 0:
+        def _t(v: list | None) -> tuple | None:
+            return tuple(v) if v is not None else None
+
+        request_key = (
+            str(vault_root.resolve()), query, _t(types), _t(projects), _t(tags),
+            _t(speakers), _t(file_types), _t(exclude_file_types), limit, scope,
+            mode, graph, rerank, auto_rerank, temporal, intent,
+            updated_after, updated_before, recency_days,
+            prefer_compiled, prefer_active, resolved_config,
+        )
+        with _span(timings, "freshness"):
+            fresh = _freshness_key(
+                vault_root, scope=scope, query_norm=query_norm, mode=mode
+            )
+        cache_key = (request_key, fresh)
+        with _span(timings, "cache_lookup"):
+            with _FIND_CACHE_LOCK:
+                cached = _FIND_CACHE.get(cache_key)
+                if cached is not None:
+                    _FIND_CACHE.move_to_end(cache_key)
+        if cached is not None:
+            if timings is not None:
+                timings.cache["hit"] = True
+            return copy.deepcopy(cached)
+
     # "kb-only" is the strict opt-out (legacy KB-only behavior); "kb" walks the
     # same KB tree but auto-widens to the vault below when it underfills. Both
     # map to a KB-only walk in the underlying rankers.
@@ -568,13 +744,14 @@ def find(
     # to embed or score with, just "give me recent stuff that matches the
     # structured filters."
     if mode == "keyword" or not query_norm:
-        hits = _find_keyword(
-            vault_root,
-            query_norm=query_norm,
-            types=types, projects=projects, tags=tags, speakers=speakers,
-            file_types=file_types, exclude_file_types=exclude_file_types,
-            limit=limit, scope=walk_scope,
-        )
+        with _span(timings, "keyword"):
+            hits = _find_keyword(
+                vault_root,
+                query_norm=query_norm,
+                types=types, projects=projects, tags=tags, speakers=speakers,
+                file_types=file_types, exclude_file_types=exclude_file_types,
+                limit=limit, scope=walk_scope,
+            )
     else:
         hits = _find_semantic(
             vault_root,
@@ -585,7 +762,8 @@ def find(
             auto_rerank=auto_rerank, temporal=temporal, intent=intent,
             prefer_compiled=prefer_compiled,
             prefer_active=prefer_active,
-            config=config if config is not None else _active_ranking(),
+            config=resolved_config,
+            timings=timings,
         )
 
     # Auto-widen: reach into the wider vault (sibling folders like Tracking/,
@@ -603,42 +781,52 @@ def find(
     # hits first, then weak graph/recency filler); the reserve never starves
     # the KB (capped at limit-1) and is empty when nothing outside matches.
     if scope == "kb" and query_norm:
-        seen = {h.path for h in hits}
-        outside = [
-            h for h in _find_outside_kb(
-                vault_root,
-                query=query,
-                query_norm=query_norm,
-                types=types, projects=projects, tags=tags, speakers=speakers,
-                file_types=file_types, exclude_file_types=exclude_file_types,
-                limit=limit,
-            )
-            if h.path not in seen
-        ]
-        if outside:
-            strong: list[Hit] = []
-            weak: list[Hit] = []
-            for h in hits:
-                page = _CACHE.get(vault_root / h.path, vault_root)
-                # Word/stem-level, not substring: a bare "x3" query must not
-                # treat files that merely contain "x3" inside a longer token
-                # (a hash, "max3...", a log copy) as strong topical matches.
-                if page is not None and _stem_tokens_present(page, query_norm):
-                    strong.append(h)
-                else:
-                    weak.append(h)
-            reserve = min(len(outside), max(1, limit // 5), max(0, limit - 1))
-            kb_keep = limit - reserve
-            hits = ((strong + weak)[:kb_keep] + outside)[:limit]
+        with _span(timings, "outside_kb"):
+            seen = {h.path for h in hits}
+            outside = [
+                h for h in _find_outside_kb(
+                    vault_root,
+                    query=query,
+                    query_norm=query_norm,
+                    types=types, projects=projects, tags=tags, speakers=speakers,
+                    file_types=file_types, exclude_file_types=exclude_file_types,
+                    limit=limit,
+                )
+                if h.path not in seen
+            ]
+            if outside:
+                strong: list[Hit] = []
+                weak: list[Hit] = []
+                for h in hits:
+                    page = _CACHE.get(vault_root / h.path, vault_root)
+                    # Word/stem-level, not substring: a bare "x3" query must not
+                    # treat files that merely contain "x3" inside a longer token
+                    # (a hash, "max3...", a log copy) as strong topical matches.
+                    if page is not None and _stem_tokens_present(page, query_norm):
+                        strong.append(h)
+                    else:
+                        weak.append(h)
+                reserve = min(len(outside), max(1, limit // 5), max(0, limit - 1))
+                kb_keep = limit - reserve
+                hits = ((strong + weak)[:kb_keep] + outside)[:limit]
 
     # Explicit recency window (off by default) — drop out-of-window hits last,
     # after auto-widen, so it governs every mode uniformly.
-    hits = _filter_by_date(
-        hits,
-        updated_after=updated_after,
-        updated_before=updated_before,
-        recency_days=recency_days,
-    )
+    with _span(timings, "date_filter"):
+        hits = _filter_by_date(
+            hits,
+            updated_after=updated_after,
+            updated_before=updated_before,
+            recency_days=recency_days,
+        )
+
+    # ---- Hot cache store (deep copies both ways; bounded LRU eviction) ----
+    if cache_key is not None:
+        with _FIND_CACHE_LOCK:
+            _FIND_CACHE[cache_key] = copy.deepcopy(hits)
+            _FIND_CACHE.move_to_end(cache_key)
+            while len(_FIND_CACHE) > cache_size:
+                _FIND_CACHE.popitem(last=False)
     return hits
 
 
@@ -723,6 +911,7 @@ def _find_semantic(
     prefer_compiled: bool = True,
     prefer_active: bool = True,
     config: RankingConfig = DEFAULT_RANKING,
+    timings: FindTimings | None = None,
 ) -> list[Hit]:
     """Hybrid (BM25+vector) or vector-only mode."""
     # Lazy imports — keep keyword-mode users out of the torch import path.
@@ -736,27 +925,32 @@ def _find_semantic(
     chunk_text_by_path: dict[str, str] = {}
     vector_score_by_path: dict[str, float] = {}
     try:
-        idx = embeddings.EmbeddingIndex(vault_root)
-        query_vec = embeddings.embed_texts([query], is_query=True)[0]
-        chunk_hits = idx.search(query_vec, k=candidate_k * 3)  # over-fetch chunks
-        # Collapse chunks → file-level: keep the best-scoring chunk per file.
-        best_per_file: dict[str, tuple[float, str]] = {}
-        for fp, _idx, ctext, score in chunk_hits:
-            existing = best_per_file.get(fp)
-            if existing is None or score > existing[0]:
-                best_per_file[fp] = (score, ctext)
-        vector_ranking = sorted(
-            best_per_file.keys(), key=lambda p: -best_per_file[p][0]
-        )[:candidate_k]
-        chunk_text_by_path = {p: best_per_file[p][1] for p in vector_ranking}
-        vector_score_by_path = {p: best_per_file[p][0] for p in vector_ranking}
+        with _span(timings, "vector"):
+            idx = embeddings.EmbeddingIndex(vault_root)
+            query_vec = embeddings.embed_texts([query], is_query=True)[0]
+            chunk_hits = idx.search(query_vec, k=candidate_k * 3)  # over-fetch chunks
+            # Collapse chunks → file-level: keep the best-scoring chunk per file.
+            best_per_file: dict[str, tuple[float, str]] = {}
+            for fp, _idx, ctext, score in chunk_hits:
+                existing = best_per_file.get(fp)
+                if existing is None or score > existing[0]:
+                    best_per_file[fp] = (score, ctext)
+            vector_ranking = sorted(
+                best_per_file.keys(), key=lambda p: -best_per_file[p][0]
+            )[:candidate_k]
+            chunk_text_by_path = {p: best_per_file[p][1] for p in vector_ranking}
+            vector_score_by_path = {p: best_per_file[p][0] for p in vector_ranking}
     except ImportError as e:
         log.warning(
             "vector search unavailable (%s); falling back to BM25-only ranking",
             e,
         )
+        if timings is not None:
+            timings.error("vector", e)
     except Exception as e:
         log.warning("vector search failed: %s; falling back to BM25-only", e)
+        if timings is not None:
+            timings.error("vector", e)
 
     # ---- CLIP contribution: text→image visual search ----
     # Lets a text query match a (possibly textless) Evidence photo by visual content.
@@ -767,38 +961,53 @@ def _find_semantic(
     clip_frame_ts_by_path: dict[str, float | None] = {}
     if embeddings.clip_enabled() and query.strip():
         try:
-            clip_idx = embeddings.ClipIndex(vault_root)
-            clip_qvec = embeddings.embed_clip_text(query)
-            # A video contributes N keyframe rows; over-fetch so distinct videos
-            # aren't crowded out, then dedup to best-per-file (rows are score-desc,
-            # so the FIRST time a sidecar appears is its best frame). Stop at candidate_k
-            # distinct sidecars; record that best frame's timestamp (None for images).
-            for img_rel, frame_ts, score in clip_idx.search(clip_qvec, k=candidate_k * 8):
-                if len(clip_ranking) >= candidate_k:
-                    break
-                sidecar_rel = img_rel + ".md"
-                if sidecar_rel not in clip_score_by_path and (vault_root / sidecar_rel).exists():
-                    clip_ranking.append(sidecar_rel)
-                    clip_score_by_path[sidecar_rel] = score
-                    clip_frame_ts_by_path[sidecar_rel] = frame_ts
+            with _span(timings, "clip"):
+                clip_idx = embeddings.ClipIndex(vault_root)
+                clip_qvec = embeddings.embed_clip_text(query)
+                # A video contributes N keyframe rows; over-fetch so distinct videos
+                # aren't crowded out, then dedup to best-per-file (rows are score-desc,
+                # so the FIRST time a sidecar appears is its best frame). Stop at candidate_k
+                # distinct sidecars; record that best frame's timestamp (None for images).
+                for img_rel, frame_ts, score in clip_idx.search(clip_qvec, k=candidate_k * 8):
+                    if len(clip_ranking) >= candidate_k:
+                        break
+                    sidecar_rel = img_rel + ".md"
+                    if sidecar_rel not in clip_score_by_path and (vault_root / sidecar_rel).exists():
+                        clip_ranking.append(sidecar_rel)
+                        clip_score_by_path[sidecar_rel] = score
+                        clip_frame_ts_by_path[sidecar_rel] = frame_ts
         except embeddings.ClipUnavailable as e:
             log.warning("CLIP search unavailable (%s); skipping image search", e)
+            if timings is not None:
+                timings.error("clip", e)
         except Exception as e:  # noqa: BLE001 — image search is best-effort
             log.warning("CLIP search failed: %s; skipping image search", e)
+            if timings is not None:
+                timings.error("clip", e)
+    elif timings is not None:
+        timings.skipped("clip")
 
     bm25_ranking: list[str] = []
     keyword_ranking: list[str] = []
     if mode == "vector":
+        if timings is not None:
+            timings.skipped("bm25")
+            timings.skipped("keyword")
         rankings = [r for r in (vector_ranking, clip_ranking) if r]
     else:
         # ---- BM25 contribution ----
         try:
-            bm25_hits = bm25.search(vault_root, query, k=candidate_k, scope=scope)
-            bm25_ranking = [p for p, _ in bm25_hits]
+            with _span(timings, "bm25"):
+                bm25_hits = bm25.search(vault_root, query, k=candidate_k, scope=scope)
+                bm25_ranking = [p for p, _ in bm25_hits]
         except ImportError as e:
             log.warning("BM25 unavailable (%s); using vector-only", e)
+            if timings is not None:
+                timings.error("bm25", e)
         except Exception as e:
             log.warning("BM25 search failed: %s; using vector-only", e)
+            if timings is not None:
+                timings.error("bm25", e)
 
         # ---- Keyword contribution: literal all-tokens-present matches ----
         # Walking the KB for substring matches makes hybrid a strict superset
@@ -807,7 +1016,8 @@ def _find_semantic(
         # hole where BM25 buries a target under thematically-noisy hits with
         # high TF on a shared common token (e.g. "Borough Market" buried
         # under Q marketing pages on the "market" stem).
-        keyword_ranking = _keyword_match_paths(vault_root, query_norm, scope)
+        with _span(timings, "keyword"):
+            keyword_ranking = _keyword_match_paths(vault_root, query_norm, scope)
         rankings = [
             r for r in (vector_ranking, bm25_ranking, keyword_ranking, clip_ranking) if r
         ]
@@ -819,6 +1029,9 @@ def _find_semantic(
     # (e.g. queries like "skip-marker-abc" where every token is common).
     graph_ranking: list[str] = []
     graph_in_degree_by_path: dict[str, int] = {}
+    if not graph and timings is not None:
+        timings.skipped("graph")
+    _graph_t0 = time.perf_counter()
     if graph:
         primary_set: set[str] = set(vector_ranking) | set(bm25_ranking)
         vector_set: set[str] = set(vector_ranking)
@@ -859,6 +1072,10 @@ def _find_semantic(
                 graph_ranking.append(target_rel)
         if graph_ranking:
             rankings.append(graph_ranking)
+        if timings is not None:
+            timings.stages.setdefault("graph", {})["ms"] = round(
+                (time.perf_counter() - _graph_t0) * 1000.0, 3
+            )
 
     # Pre-compute per-mode rank lookups so we can tag each Hit's signals.
     vector_rank_by_path = {p: i + 1 for i, p in enumerate(vector_ranking)}
@@ -885,41 +1102,45 @@ def _find_semantic(
     # fusion) for every other query — keeping the common path byte-identical.
     temporal_ranking: list[str] = []
     if temporal and _is_temporal_query(query):
-        pool: list[str] = []
-        for lane in (vector_ranking, bm25_ranking, keyword_ranking, clip_ranking):
-            pool.extend(lane)
-        temporal_ranking = _recency_ranking(pool, vault_root, candidate_k)
+        with _span(timings, "temporal"):
+            pool: list[str] = []
+            for lane in (vector_ranking, bm25_ranking, keyword_ranking, clip_ranking):
+                pool.extend(lane)
+            temporal_ranking = _recency_ranking(pool, vault_root, candidate_k)
+    elif timings is not None:
+        timings.skipped("temporal")
 
     # ---- Intent-adaptive weighted RRF ----
     # Classify the query, pick the per-intent lane weights, fuse. The
     # "conceptual" default is all-1.0, so the common case reproduces the
     # unweighted RRF exactly; only non-conceptual intents reweight the lanes.
-    intent_label = intent or _classify_intent(query)
-    weights = config.intent_weights(intent_label)
-    lane_rankings = [
-        vector_ranking, bm25_ranking, keyword_ranking,
-        clip_ranking, graph_ranking, temporal_ranking,
-    ]
-    active_lists: list[list[str]] = []
-    active_weights: list[float] = []
-    for lane, w in zip(lane_rankings, weights, strict=True):
-        if lane:
-            active_lists.append(lane)
-            active_weights.append(w)
-    fused = fusion.reciprocal_rank_fusion_weighted(
-        active_lists, active_weights, k=config.rrf_k
-    )
-    # Apply type-weight boost before iterating fused candidates — affects the
-    # iteration order for non-rerank flows. For rerank, the boost is also
-    # applied to rerank_score below so it survives the final sort.
-    if prefer_compiled:
-        fused = _apply_type_boost(fused, vault_root, config)
-    if prefer_active:
-        fused = _apply_status_demotion(fused, vault_root, config)
-    # Gaussian recency multiplier (off unless config.temporal_boost != 1.0 AND
-    # the query is temporal). Mirrors the type/status post-RRF multipliers.
-    if temporal:
-        fused = _apply_temporal_boost(fused, vault_root, query, config)
+    with _span(timings, "fusion"):
+        intent_label = intent or _classify_intent(query)
+        weights = config.intent_weights(intent_label)
+        lane_rankings = [
+            vector_ranking, bm25_ranking, keyword_ranking,
+            clip_ranking, graph_ranking, temporal_ranking,
+        ]
+        active_lists: list[list[str]] = []
+        active_weights: list[float] = []
+        for lane, w in zip(lane_rankings, weights, strict=True):
+            if lane:
+                active_lists.append(lane)
+                active_weights.append(w)
+        fused = fusion.reciprocal_rank_fusion_weighted(
+            active_lists, active_weights, k=config.rrf_k
+        )
+        # Apply type-weight boost before iterating fused candidates — affects the
+        # iteration order for non-rerank flows. For rerank, the boost is also
+        # applied to rerank_score below so it survives the final sort.
+        if prefer_compiled:
+            fused = _apply_type_boost(fused, vault_root, config)
+        if prefer_active:
+            fused = _apply_status_demotion(fused, vault_root, config)
+        # Gaussian recency multiplier (off unless config.temporal_boost != 1.0 AND
+        # the query is temporal). Mirrors the type/status post-RRF multipliers.
+        if temporal:
+            fused = _apply_temporal_boost(fused, vault_root, query, config)
     vector_paths: set[str] = set(vector_ranking)
 
     # Resolve fused paths back to ParsedPage, filter, build hits in fused order.
@@ -936,6 +1157,7 @@ def _find_semantic(
     target_n = limit * 3 if may_rerank else limit
     hits: list[Hit] = []
     seen: set[str] = set()
+    _filter_t0 = time.perf_counter()
     for rel_path, _score in fused:
         if rel_path in seen:
             continue
@@ -999,6 +1221,10 @@ def _find_semantic(
         ))
         if len(hits) >= target_n:
             break
+    if timings is not None:
+        timings.stages.setdefault("filter_hits", {})["ms"] = round(
+            (time.perf_counter() - _filter_t0) * 1000.0, 3
+        )
 
     # Resolve the rerank decision. An explicit rerank=True/False always wins;
     # otherwise (rerank is None) auto_rerank consults should_rerank on the built
@@ -1008,7 +1234,10 @@ def _find_semantic(
     else:
         do_rerank = rerank
 
+    if timings is not None and not (do_rerank and hits):
+        timings.skipped("rerank")
     if do_rerank and hits:
+        _rerank_t0 = time.perf_counter()
         try:
             from . import embeddings as emb
             # Best passage for each hit: the matched chunk when we have one,
@@ -1045,8 +1274,17 @@ def _find_semantic(
             hits.sort(key=lambda h: -(h.rerank_score if h.rerank_score is not None else float("-inf")))
         except ImportError as e:
             log.warning("rerank requested but reranker unavailable: %s", e)
+            if timings is not None:
+                timings.error("rerank", e)
         except Exception as e:
             log.warning("rerank failed: %s; returning fused order", e)
+            if timings is not None:
+                timings.error("rerank", e)
+        finally:
+            if timings is not None:
+                timings.stages.setdefault("rerank", {})["ms"] = round(
+                    (time.perf_counter() - _rerank_t0) * 1000.0, 3
+                )
 
     return hits[:limit]
 
@@ -1808,5 +2046,9 @@ def _collapse(s: str) -> str:
 
 
 def clear_cache() -> None:
-    """Test hook: flush the in-process cache between tests."""
+    """Test hook: flush every in-process find cache between tests — parsed
+    pages, the wikilink resolver, and the hot find-result cache."""
     _CACHE.entries.clear()
+    _RESOLVER_CACHE.clear()
+    with _FIND_CACHE_LOCK:
+        _FIND_CACHE.clear()
